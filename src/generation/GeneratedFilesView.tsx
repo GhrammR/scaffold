@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import type { RevisionHistoryEntry, useGeneration } from './useGeneration'
+import type { HistoryLineage, RevisionHistoryEntry, useGeneration } from './useGeneration'
 import { buildScaffoldZip } from './buildZip'
-import { type KeyedListDiff, type ListDiff, type ScaffoldDiffSummary } from './diffScaffold'
+import { countDiffTotals, type KeyedListDiff, type ListDiff, type ScaffoldDiffSummary } from './diffScaffold'
 import { countLineDiff, diffLines, type LineDiffOp } from './lineDiff'
 import { groupDiffTotalsByFile } from './diffFileGrouping'
 import { computeNamedFileDiffs } from './revisionFileDiffs'
@@ -174,13 +174,69 @@ function DiffDetail({ diff }: { diff: ScaffoldDiffSummary }) {
   )
 }
 
+function CollapsibleDiffDetail({ diff }: { diff: ScaffoldDiffSummary }) {
+  const [expanded, setExpanded] = useState(true)
+  const totals = countDiffTotals(diff)
+
+  return (
+    <div className="bg-blue-50 border border-blue-200 rounded flex flex-col">
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        className="flex items-center justify-between gap-2 w-full text-left p-3"
+      >
+        <span className="flex items-center gap-1 text-sm font-semibold text-blue-800">
+          <span className="text-blue-400">{expanded ? '▾' : '▸'}</span>
+          <span>What changed (detail)</span>
+        </span>
+        <CountBadge added={totals.added} removed={totals.removed} />
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-3 max-h-[40vh] overflow-y-auto">
+          <DiffDetail diff={diff} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface TwoFileTexts {
+  previousClaudeMdText: string
+  nextClaudeMdText: string
+  previousSlicePlanText: string
+  nextSlicePlanText: string
+}
+
+function namedFileDiffsFor(texts: TwoFileTexts) {
+  return computeNamedFileDiffs([
+    { filename: 'CLAUDE.md', previous: texts.previousClaudeMdText, next: texts.nextClaudeMdText },
+    { filename: 'slice-plan.md', previous: texts.previousSlicePlanText, next: texts.nextSlicePlanText },
+  ])
+}
+
+function ExpandableFileDiffs({ fileDiffs }: { fileDiffs: ReturnType<typeof computeNamedFileDiffs> }) {
+  if (fileDiffs.length === 0) {
+    return <div className="text-gray-400">No file changes.</div>
+  }
+  return (
+    <>
+      {fileDiffs.map((file) => (
+        <div key={file.filename}>
+          <div className="flex items-center justify-between mb-1">
+            <span className="font-mono font-semibold text-gray-700">{file.filename}</span>
+            <CountBadge added={file.added} removed={file.removed} />
+          </div>
+          <FileLines ops={file.ops} />
+        </div>
+      ))}
+    </>
+  )
+}
+
 function RevisionHistoryItem({ entry }: { entry: RevisionHistoryEntry }) {
   const [expanded, setExpanded] = useState(false)
-
-  const fileDiffs = computeNamedFileDiffs([
-    { filename: 'CLAUDE.md', previous: entry.previousClaudeMdText, next: entry.nextClaudeMdText },
-    { filename: 'slice-plan.md', previous: entry.previousSlicePlanText, next: entry.nextSlicePlanText },
-  ])
+  const fileDiffs = namedFileDiffsFor(entry)
 
   return (
     <div>
@@ -201,18 +257,51 @@ function RevisionHistoryItem({ entry }: { entry: RevisionHistoryEntry }) {
 
       {expanded && (
         <div className="mt-2 mb-1 ml-4 space-y-2 border-l pl-3">
-          {fileDiffs.length === 0 ? (
-            <div className="text-gray-400">No file changes.</div>
-          ) : (
-            fileDiffs.map((file) => (
-              <div key={file.filename}>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-mono font-semibold text-gray-700">{file.filename}</span>
-                  <CountBadge added={file.added} removed={file.removed} />
-                </div>
-                <FileLines ops={file.ops} />
-              </div>
-            ))
+          <ExpandableFileDiffs fileDiffs={fileDiffs} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+const REGENERATION_LABEL: Record<HistoryLineage['regeneration']['kind'], string> = {
+  fresh: 'Regeneration',
+  'with-revisions': 'Regeneration (with revisions)',
+}
+
+function LineageItem({ lineage }: { lineage: HistoryLineage }) {
+  const [expanded, setExpanded] = useState(false)
+  const fileDiffs = namedFileDiffsFor(lineage.regeneration)
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        className="flex items-center justify-between gap-2 w-full text-left font-semibold text-gray-700"
+      >
+        <span className="flex items-center gap-1">
+          <span className="text-gray-400">{expanded ? '▾' : '▸'}</span>
+          <span>{REGENERATION_LABEL[lineage.regeneration.kind]}</span>
+        </span>
+        <CountBadge
+          added={fileDiffs.reduce((sum, f) => sum + f.added, 0)}
+          removed={fileDiffs.reduce((sum, f) => sum + f.removed, 0)}
+        />
+      </button>
+
+      {expanded && (
+        <div className="mt-2 mb-1 ml-4 space-y-3 border-l pl-3">
+          <div className="space-y-2">
+            <ExpandableFileDiffs fileDiffs={fileDiffs} />
+          </div>
+          {lineage.revisions.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="font-semibold text-gray-500">Revisions leading up to this regeneration</div>
+              {lineage.revisions.map((entry, i) => (
+                <RevisionHistoryItem key={i} entry={entry} />
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -221,7 +310,7 @@ function RevisionHistoryItem({ entry }: { entry: RevisionHistoryEntry }) {
 }
 
 export function GeneratedFilesView({ generation, onBackToInterview }: GeneratedFilesViewProps) {
-  const { state, generate, revise, dismissError } = generation
+  const { state, generate, regenerateWithRevisions, revise, dismissError } = generation
   const [downloading, setDownloading] = useState(false)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [revisionDraft, setRevisionDraft] = useState('')
@@ -248,13 +337,17 @@ export function GeneratedFilesView({ generation, onBackToInterview }: GeneratedF
     }
   }
 
-  // Only the most recent revision drives the diff display — first
-  // generation and a fresh Regenerate have no "previous" to compare against.
-  const latestRevision = state.revisionHistory.at(-1)
-  const claudeMdDiffOps = latestRevision ? diffLines(latestRevision.previousClaudeMdText, latestRevision.nextClaudeMdText) : undefined
-  const slicePlanDiffOps = latestRevision
-    ? diffLines(latestRevision.previousSlicePlanText, latestRevision.nextSlicePlanText)
+  // The most recent action drives the diff display: an open revision if one
+  // exists since the last regeneration, else the most recent regeneration's
+  // own diff, else nothing (fresh first generation, no "previous" yet).
+  const latestAction: TwoFileTexts | undefined =
+    state.openRevisions.at(-1) ?? state.lineages.at(-1)?.regeneration
+  const claudeMdDiffOps = latestAction ? diffLines(latestAction.previousClaudeMdText, latestAction.nextClaudeMdText) : undefined
+  const slicePlanDiffOps = latestAction
+    ? diffLines(latestAction.previousSlicePlanText, latestAction.nextSlicePlanText)
     : undefined
+  const latestActionDiff = state.openRevisions.at(-1)?.diff ?? state.lineages.at(-1)?.regeneration.diff
+  const hasAnyRevisions = state.lineages.some((l) => l.revisions.length > 0) || state.openRevisions.length > 0
 
   return (
     <div className="flex flex-col h-screen p-4 gap-4">
@@ -264,9 +357,37 @@ export function GeneratedFilesView({ generation, onBackToInterview }: GeneratedF
           <button type="button" onClick={onBackToInterview} className="text-sm underline">
             Back to interview
           </button>
-          <button type="button" onClick={generate} disabled={state.status === 'loading'} className="text-sm underline">
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                hasAnyRevisions &&
+                !window.confirm('This will discard all revisions and history and regenerate from scratch. Continue?')
+              ) {
+                return
+              }
+              generate()
+            }}
+            disabled={state.status === 'loading'}
+            className="text-sm underline"
+          >
             Regenerate
           </button>
+          {hasAnyRevisions && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!window.confirm('This will replace the current scaffold with a fresh regeneration (your revision history is kept). Continue?')) {
+                  return
+                }
+                regenerateWithRevisions()
+              }}
+              disabled={state.status === 'loading'}
+              className="text-sm underline"
+            >
+              Regenerate with revisions
+            </button>
+          )}
           {state.claudeMdText && state.slicePlanText && (
             <button
               type="button"
@@ -319,15 +440,10 @@ export function GeneratedFilesView({ generation, onBackToInterview }: GeneratedF
         </div>
       )}
 
-      {/* Level 3: detailed per-section breakdown, grouped by file, below the files */}
-      {latestRevision && (
-        <div className="p-3 bg-blue-50 border border-blue-200 rounded">
-          <div className="mb-1">
-            <span className="text-sm font-semibold text-blue-800">What changed (detail)</span>
-          </div>
-          <DiffDetail diff={latestRevision.diff} />
-        </div>
-      )}
+      {/* Level 3: detailed per-section breakdown, grouped by file, below the files.
+          Bounded + scrollable so a large diff scrolls within its own area
+          instead of growing the page and pushing the file panels off-screen. */}
+      {latestActionDiff && <CollapsibleDiffDetail diff={latestActionDiff} />}
 
       {state.scaffold && (
         <div className="border rounded p-3 flex flex-col gap-2">
@@ -356,14 +472,20 @@ export function GeneratedFilesView({ generation, onBackToInterview }: GeneratedF
             </button>
           </form>
 
-          {state.revisionHistory.length > 0 && (
+          {hasAnyRevisions && (
             <div className="text-xs text-gray-500 space-y-2">
               <div className="font-semibold">Revision history</div>
-              {state.revisionHistory
+              {state.openRevisions
                 .slice()
                 .reverse()
                 .map((entry, i) => (
-                  <RevisionHistoryItem key={i} entry={entry} />
+                  <RevisionHistoryItem key={`open-${i}`} entry={entry} />
+                ))}
+              {state.lineages
+                .slice()
+                .reverse()
+                .map((lineage, i) => (
+                  <LineageItem key={`lineage-${i}`} lineage={lineage} />
                 ))}
             </div>
           )}

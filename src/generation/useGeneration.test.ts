@@ -327,21 +327,42 @@ describe('useGeneration revision', () => {
     expect(result.current.state.errorMessage).toContain('did not match the expected shape')
   })
 
-  it('resets revisionMessages and revisionHistory when generate() (Regenerate) runs again', async () => {
-    const { result } = await generateThenRevise([goodScaffold()])
-
-    act(() => result.current.revise('A small tweak.'))
-    await waitFor(() => expect(result.current.state.status).toBe('done'))
-    expect(result.current.state.revisionMessages.length).toBeGreaterThan(0)
-    expect(result.current.state.revisionHistory.length).toBeGreaterThan(0)
+  it('generate() (plain Regenerate) hard-resets: wipes revisionMessages, openRevisions, AND any closed lineages', async () => {
+    // Plain Regenerate is a clean slate — the lineage/history feature is
+    // exclusive to regenerateWithRevisions(). Build up some history first
+    // (a revision, then a regenerate-with-revisions that closes a lineage),
+    // then confirm plain Regenerate wipes all of it, not just the open group.
+    const provider = fakeProvider([
+      goodScaffold(),
+      goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] }),
+      goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] }), // regenerate-with-revisions
+      goodScaffold(), // plain Regenerate
+    ])
+    const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
 
     act(() => result.current.generate())
     await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    act(() => result.current.revise('A small tweak.'))
+    await waitFor(() => expect(result.current.state.openRevisions).toHaveLength(1))
+
+    act(() => result.current.regenerateWithRevisions())
+    await waitFor(() => expect(result.current.state.lineages).toHaveLength(1))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
     expect(result.current.state.revisionMessages).toEqual([])
-    expect(result.current.state.revisionHistory).toEqual([])
+    expect(result.current.state.openRevisions).toEqual([])
+    expect(result.current.state.lineages).toEqual([])
   })
 
-  it('persists revisionMessages and revisionHistory across a simulated refresh', async () => {
+  it('does not create a lineage entry for the very first generation (nothing to diff against)', async () => {
+    const { result } = await generateThenRevise([])
+    expect(result.current.state.lineages).toEqual([])
+  })
+
+  it('persists revisionMessages and openRevisions across a simulated refresh', async () => {
     const { provider, result } = await generateThenRevise([goodScaffold()])
 
     act(() => result.current.revise('A small tweak.'))
@@ -349,7 +370,7 @@ describe('useGeneration revision', () => {
 
     const { result: restored } = renderHook(() => useGeneration(provider, [], [], []))
     expect(restored.current.state.revisionMessages.some((m) => m.content === 'A small tweak.')).toBe(true)
-    expect(restored.current.state.revisionHistory.some((entry) => entry.request === 'A small tweak.')).toBe(true)
+    expect(restored.current.state.openRevisions.some((entry) => entry.request === 'A small tweak.')).toBe(true)
   })
 
   it('appends a structured entry (request + diff) to revisionHistory on each successful revision', async () => {
@@ -359,9 +380,9 @@ describe('useGeneration revision', () => {
     act(() => result.current.revise('Add a hard rule that tests run before every commit.'))
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
-    expect(result.current.state.revisionHistory).toHaveLength(1)
-    expect(result.current.state.revisionHistory[0].request).toBe('Add a hard rule that tests run before every commit.')
-    expect(result.current.state.revisionHistory[0].diff.hardInvariants.added).toContain('Tests run before every commit.')
+    expect(result.current.state.openRevisions).toHaveLength(1)
+    expect(result.current.state.openRevisions[0].request).toBe('Add a hard rule that tests run before every commit.')
+    expect(result.current.state.openRevisions[0].diff.hardInvariants.added).toContain('Tests run before every commit.')
   })
 
   it('captures the before/after rendered text for each revision, for the inline line-level diff', async () => {
@@ -372,7 +393,7 @@ describe('useGeneration revision', () => {
     act(() => result.current.revise('Add a hard rule that tests run before every commit.'))
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
-    const entry = result.current.state.revisionHistory[0]
+    const entry = result.current.state.openRevisions[0]
     expect(entry.previousClaudeMdText).toBe(claudeMdBefore)
     expect(entry.nextClaudeMdText).toContain('Tests run before every commit.')
     expect(entry.nextClaudeMdText).not.toBe(entry.previousClaudeMdText)
@@ -389,7 +410,7 @@ describe('useGeneration revision', () => {
     act(() => result.current.revise('Replace the divide-by-zero rule with a rule about negative square roots.'))
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
-    const entry = result.current.state.revisionHistory[0]
+    const entry = result.current.state.openRevisions[0]
 
     // The core regression: before/after text must genuinely differ.
     expect(entry.previousClaudeMdText).toBe(claudeMdBefore)
@@ -417,8 +438,8 @@ describe('useGeneration revision', () => {
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
     expect(result.current.state.noOpWarning).toBe('The model returned no changes for that request — try rephrasing.')
-    expect(result.current.state.revisionHistory[0].nextClaudeMdText).toBe(
-      result.current.state.revisionHistory[0].previousClaudeMdText,
+    expect(result.current.state.openRevisions[0].nextClaudeMdText).toBe(
+      result.current.state.openRevisions[0].previousClaudeMdText,
     )
   })
 
@@ -443,5 +464,132 @@ describe('useGeneration revision', () => {
     act(() => result.current.generate())
     await waitFor(() => expect(result.current.state.status).toBe('done'))
     expect(result.current.state.noOpWarning).toBeUndefined()
+  })
+})
+
+describe('useGeneration regenerateWithRevisions', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
+  async function generateReviseTwice(freshScaffold: GeneratedScaffold) {
+    const provider = fakeProvider([
+      goodScaffold(),
+      goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] }),
+      goodScaffold({
+        hardInvariants: ['Never store payment details.', 'Tests run before every commit.'],
+        conventions: ['Use tabs.'],
+      }),
+      freshScaffold,
+    ])
+    const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    act(() => result.current.revise('Add a hard rule that tests run before every commit.'))
+    await waitFor(() => expect(result.current.state.openRevisions).toHaveLength(1))
+
+    act(() => result.current.revise('Add a convention: use tabs.'))
+    await waitFor(() => expect(result.current.state.openRevisions).toHaveLength(2))
+
+    return { provider, result }
+  }
+
+  it('feeds every accumulated revision request into the system prompt for a single generation call', async () => {
+    const { provider, result } = await generateReviseTwice(goodScaffold({ conventions: ['Use tabs.'] }))
+
+    act(() => result.current.regenerateWithRevisions())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    // 3 prior calls (generate + 2 revise) + 1 regenerate-with-revisions call.
+    expect(provider.complete).toHaveBeenCalledTimes(4)
+    const call = (provider.complete as ReturnType<typeof vi.fn>).mock.calls[3][0]
+    expect(call.system).toContain('Add a hard rule that tests run before every commit.')
+    expect(call.system).toContain('Add a convention: use tabs.')
+    expect(call.system).toContain('FULL REGENERATION')
+  })
+
+  it('sends messages built from the interview transcript, not the revisionMessages thread', async () => {
+    const { provider, result } = await generateReviseTwice(goodScaffold())
+
+    act(() => result.current.regenerateWithRevisions())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    const call = (provider.complete as ReturnType<typeof vi.fn>).mock.calls[3][0]
+    expect(call.messages[0]).toEqual({ role: 'user', content: 'hi' })
+    expect(call.messages.at(-1)).toEqual({ role: 'user', content: 'Generate the scaffold now based on our conversation.' })
+  })
+
+  it('closes the open revisions into a "with-revisions" lineage and clears the open group', async () => {
+    const fresh = goodScaffold({ projectSummary: 'A rebuilt recipe app.' })
+    const { result } = await generateReviseTwice(fresh)
+
+    act(() => result.current.regenerateWithRevisions())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    expect(result.current.state.openRevisions).toEqual([])
+    expect(result.current.state.lineages).toHaveLength(1)
+    expect(result.current.state.lineages[0].regeneration.kind).toBe('with-revisions')
+    expect(result.current.state.lineages[0].revisions.map((r) => r.request)).toEqual([
+      'Add a hard rule that tests run before every commit.',
+      'Add a convention: use tabs.',
+    ])
+    expect(result.current.state.claudeMdText).toContain('A rebuilt recipe app.')
+  })
+
+  it('resets revisionMessages so a later revision targets the new scaffold with a fresh thread', async () => {
+    const { result } = await generateReviseTwice(goodScaffold())
+
+    act(() => result.current.regenerateWithRevisions())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    expect(result.current.state.revisionMessages).toEqual([])
+  })
+
+  it('includes requests from an already-closed lineage on a second regenerate-with-revisions, not just the open group', async () => {
+    const provider = fakeProvider([
+      goodScaffold(),
+      goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] }),
+      goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] }), // 1st regenerate-with-revisions
+      goodScaffold({
+        hardInvariants: ['Never store payment details.', 'Tests run before every commit.'],
+        conventions: ['Use tabs.'],
+      }),
+      goodScaffold({ conventions: ['Use tabs.'] }), // 2nd regenerate-with-revisions
+    ])
+    const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    act(() => result.current.revise('Add a hard rule that tests run before every commit.'))
+    await waitFor(() => expect(result.current.state.openRevisions).toHaveLength(1))
+
+    act(() => result.current.regenerateWithRevisions())
+    await waitFor(() => expect(result.current.state.lineages).toHaveLength(1))
+
+    act(() => result.current.revise('Add a convention: use tabs.'))
+    await waitFor(() => expect(result.current.state.openRevisions).toHaveLength(1))
+
+    act(() => result.current.regenerateWithRevisions())
+    await waitFor(() => expect(result.current.state.lineages).toHaveLength(2))
+
+    const secondRegenCall = (provider.complete as ReturnType<typeof vi.fn>).mock.calls[4][0]
+    expect(secondRegenCall.system).toContain('Add a hard rule that tests run before every commit.')
+    expect(secondRegenCall.system).toContain('Add a convention: use tabs.')
+  })
+
+  it('persists lineages and openRevisions across a simulated refresh', async () => {
+    const { provider, result } = await generateReviseTwice(goodScaffold())
+
+    act(() => result.current.regenerateWithRevisions())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    const { result: restored } = renderHook(() => useGeneration(provider, [], [], []))
+    expect(restored.current.state.lineages).toHaveLength(1)
+    expect(restored.current.state.lineages[0].regeneration.kind).toBe('with-revisions')
+    expect(restored.current.state.lineages[0].revisions).toHaveLength(2)
+    expect(restored.current.state.openRevisions).toEqual([])
   })
 })

@@ -1,7 +1,7 @@
 import type { LLMMessage } from '../llm/LLMProvider'
 import type { CoverageStatus, Decision } from '../interview/types'
 import type { GeneratedScaffold } from '../generation/types'
-import type { RevisionHistoryEntry } from '../generation/useGeneration'
+import type { HistoryLineage, RevisionHistoryEntry } from '../generation/useGeneration'
 
 const STORAGE_KEY = 'scaffold:interviewSession'
 
@@ -13,7 +13,8 @@ export interface PersistedSession {
   doneWarning?: string
   generatedScaffold?: GeneratedScaffold
   revisionMessages?: LLMMessage[]
-  revisionHistory?: RevisionHistoryEntry[]
+  lineages?: HistoryLineage[]
+  openRevisions?: RevisionHistoryEntry[]
 }
 
 export function loadSession(): PersistedSession | null {

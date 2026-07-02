@@ -46,6 +46,38 @@ describe('diffScaffold', () => {
     expect(diff.hardInvariants).toEqual({ added: [], removed: ['Divide by zero must show an error.'] })
   })
 
+  it('a same-field replace ("swap this rule for that rule") reports BOTH the removal and the addition, never just one', () => {
+    // Regression coverage for a reported issue: a "replace X with Y" revision
+    // must surface both sides of the swap in the diff, not just the removal.
+    const next: GeneratedScaffold = {
+      ...base,
+      claudeMd: { ...base.claudeMd, hardInvariants: ['Negative square root must show an error.'] },
+    }
+    const diff = diffScaffold(base, next)
+    expect(diff.hardInvariants.removed).toEqual(['Divide by zero must show an error.'])
+    expect(diff.hardInvariants.added).toEqual(['Negative square root must show an error.'])
+  })
+
+  it('a replace within a MULTI-item list still reports both sides, leaving untouched items out of the diff', () => {
+    const multiItemBase: GeneratedScaffold = {
+      ...base,
+      claudeMd: {
+        ...base.claudeMd,
+        hardInvariants: ['Divide by zero must show an error.', 'Log of a non-positive number must show an error.'],
+      },
+    }
+    const next: GeneratedScaffold = {
+      ...multiItemBase,
+      claudeMd: {
+        ...multiItemBase.claudeMd,
+        hardInvariants: ['Negative square root must show an error.', 'Log of a non-positive number must show an error.'],
+      },
+    }
+    const diff = diffScaffold(multiItemBase, next)
+    expect(diff.hardInvariants.removed).toEqual(['Divide by zero must show an error.'])
+    expect(diff.hardInvariants.added).toEqual(['Negative square root must show an error.'])
+  })
+
   it('detects a soft decision moved to hard (removed from soft, added to hard) by key', () => {
     const next: GeneratedScaffold = {
       ...base,

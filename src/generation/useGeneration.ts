@@ -5,6 +5,7 @@ import type { CoverageStatus, Decision } from '../interview/types'
 import { SCAFFOLD_TOOL, SCAFFOLD_TOOL_NAME } from './scaffoldTool'
 import { buildGenerationSystemPrompt } from './generationSystemPrompt'
 import { buildRevisionSystemPrompt } from './revisionSystemPrompt'
+import { buildRegenerateWithRevisionsSystemPrompt } from './regenerateWithRevisionsSystemPrompt'
 import { renderClaudeMd, renderSlicePlan } from './renderMarkdown'
 import { validateScaffold } from './validateScaffold'
 import { countDiffTotals, diffScaffold, summarizeDiff, type ScaffoldDiffSummary } from './diffScaffold'
@@ -22,6 +23,22 @@ export interface RevisionHistoryEntry {
   nextSlicePlanText: string
 }
 
+export type RegenerationKind = 'fresh' | 'with-revisions'
+
+export interface RegenerationMarker {
+  kind: RegenerationKind
+  diff: ScaffoldDiffSummary
+  previousClaudeMdText: string
+  nextClaudeMdText: string
+  previousSlicePlanText: string
+  nextSlicePlanText: string
+}
+
+export interface HistoryLineage {
+  regeneration: RegenerationMarker
+  revisions: RevisionHistoryEntry[]
+}
+
 export interface UseGenerationState {
   status: GenerationStatus
   errorMessage?: string
@@ -29,7 +46,8 @@ export interface UseGenerationState {
   claudeMdText?: string
   slicePlanText?: string
   revisionMessages: LLMMessage[]
-  revisionHistory: RevisionHistoryEntry[]
+  lineages: HistoryLineage[]
+  openRevisions: RevisionHistoryEntry[]
   lastDiffSummary?: string
   noOpWarning?: string
 }
@@ -115,16 +133,18 @@ function initialState(): UseGenerationState {
       claudeMdText: renderClaudeMd(persisted.generatedScaffold.claudeMd),
       slicePlanText: renderSlicePlan(persisted.generatedScaffold.slicePlan),
       revisionMessages: persisted.revisionMessages ?? [],
-      revisionHistory: persisted.revisionHistory ?? [],
+      lineages: persisted.lineages ?? [],
+      openRevisions: persisted.openRevisions ?? [],
     }
   }
-  return { status: 'idle', revisionMessages: [], revisionHistory: [] }
+  return { status: 'idle', revisionMessages: [], lineages: [], openRevisions: [] }
 }
 
 function persistScaffold(
   scaffold: GeneratedScaffold,
   revisionMessages: LLMMessage[],
-  revisionHistory: RevisionHistoryEntry[],
+  lineages: HistoryLineage[],
+  openRevisions: RevisionHistoryEntry[],
 ): void {
   const existing = loadSession()
   saveSession({
@@ -135,7 +155,8 @@ function persistScaffold(
     doneWarning: existing?.doneWarning,
     generatedScaffold: scaffold,
     revisionMessages,
-    revisionHistory,
+    lineages,
+    openRevisions,
   })
 }
 
@@ -234,8 +255,78 @@ async function runScaffoldCall(
   return { errorMessage: second.finalErrorMessage }
 }
 
+function allRevisionRequests(lineages: HistoryLineage[], openRevisions: RevisionHistoryEntry[]): string[] {
+  return [...lineages.flatMap((l) => l.revisions.map((r) => r.request)), ...openRevisions.map((r) => r.request)]
+}
+
 export function useGeneration(provider: LLMProvider, messages: LLMMessage[], coverage: CoverageStatus[], decisions: Decision[]) {
   const [state, setState] = useState<UseGenerationState>(initialState)
+
+  // Plain Regenerate: a hard reset. Wipes ALL history — closed lineages and
+  // the open revisions alike — and starts clean, as if this were the very
+  // first generation. The lineage/history feature is exclusive to
+  // regenerateWithRevisions(); plain Regenerate never creates a lineage entry.
+  const commitFreshScaffold = useCallback((freshScaffold: GeneratedScaffold): void => {
+    const claudeMdText = renderClaudeMd(freshScaffold.claudeMd)
+    const slicePlanText = renderSlicePlan(freshScaffold.slicePlan)
+
+    persistScaffold(freshScaffold, [], [], [])
+    setState({
+      status: 'done',
+      scaffold: freshScaffold,
+      claudeMdText,
+      slicePlanText,
+      revisionMessages: [],
+      lineages: [],
+      openRevisions: [],
+      lastDiffSummary: undefined,
+      noOpWarning: undefined,
+    })
+  }, [])
+
+  // Regenerate with revisions: builds the RegenerationMarker from the scaffold
+  // as it stood right before this call, closes the currently open lineage
+  // under it (preserving history), and commits the fresh result.
+  const commitRegenerationWithRevisions = useCallback(
+    (freshScaffold: GeneratedScaffold): void => {
+      const claudeMdText = renderClaudeMd(freshScaffold.claudeMd)
+      const slicePlanText = renderSlicePlan(freshScaffold.slicePlan)
+
+      const previousScaffold = state.scaffold
+      let nextLineages = state.lineages
+
+      if (previousScaffold) {
+        const previousClaudeMdText = state.claudeMdText ?? renderClaudeMd(previousScaffold.claudeMd)
+        const previousSlicePlanText = state.slicePlanText ?? renderSlicePlan(previousScaffold.slicePlan)
+        const marker: RegenerationMarker = {
+          kind: 'with-revisions',
+          diff: diffScaffold(previousScaffold, freshScaffold),
+          previousClaudeMdText,
+          nextClaudeMdText: claudeMdText,
+          previousSlicePlanText,
+          nextSlicePlanText: slicePlanText,
+        }
+        nextLineages = [...state.lineages, { regeneration: marker, revisions: state.openRevisions }]
+      }
+      // No previous scaffold — nothing to diff against — no lineage entry.
+      // (In practice regenerateWithRevisions is hidden until a scaffold
+      // exists, so this branch is defensive rather than reachable.)
+
+      persistScaffold(freshScaffold, [], nextLineages, [])
+      setState({
+        status: 'done',
+        scaffold: freshScaffold,
+        claudeMdText,
+        slicePlanText,
+        revisionMessages: [],
+        lineages: nextLineages,
+        openRevisions: [],
+        lastDiffSummary: undefined,
+        noOpWarning: undefined,
+      })
+    },
+    [state.scaffold, state.claudeMdText, state.slicePlanText, state.lineages, state.openRevisions],
+  )
 
   const runGenerate = useCallback(async (): Promise<void> => {
     setState((prev) => ({ ...prev, status: 'loading', errorMessage: undefined }))
@@ -262,21 +353,7 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
     }
 
     try {
-      const claudeMdText = renderClaudeMd(outcome.scaffold.claudeMd)
-      const slicePlanText = renderSlicePlan(outcome.scaffold.slicePlan)
-      // A fresh generation starts a new scaffold lineage — any prior revision
-      // conversation was about the old scaffold and shouldn't carry over.
-      persistScaffold(outcome.scaffold, [], [])
-      setState({
-        status: 'done',
-        scaffold: outcome.scaffold,
-        claudeMdText,
-        slicePlanText,
-        revisionMessages: [],
-        revisionHistory: [],
-        lastDiffSummary: undefined,
-        noOpWarning: undefined,
-      })
+      commitFreshScaffold(outcome.scaffold)
     } catch (renderError) {
       console.error('[generation] Rendering the validated scaffold threw an error:', renderError, 'Scaffold:', outcome.scaffold)
       setState((prev) => ({
@@ -285,11 +362,54 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
         errorMessage: 'The scaffold passed validation but failed to render. See the browser console for details.',
       }))
     }
-  }, [provider, messages, coverage, decisions])
+  }, [provider, messages, coverage, decisions, commitFreshScaffold])
 
   const generate = useCallback(() => {
     void runGenerate()
   }, [runGenerate])
+
+  const runRegenerateWithRevisions = useCallback(async (): Promise<void> => {
+    const requests = allRevisionRequests(state.lineages, state.openRevisions)
+    setState((prev) => ({ ...prev, status: 'loading', errorMessage: undefined }))
+
+    const requestMessages: LLMMessage[] = [
+      ...messages,
+      { role: 'user', content: 'Generate the scaffold now based on our conversation.' },
+    ]
+
+    const outcome = await runScaffoldCall(
+      provider,
+      buildRegenerateWithRevisionsSystemPrompt(coverage, decisions, requests),
+      requestMessages,
+      decisions,
+      'regenerate-with-revisions',
+    )
+
+    if ('errorMessage' in outcome) {
+      setState((prev) => ({ ...prev, status: 'error', errorMessage: outcome.errorMessage }))
+      return
+    }
+
+    try {
+      commitRegenerationWithRevisions(outcome.scaffold)
+    } catch (renderError) {
+      console.error(
+        '[regenerate-with-revisions] Rendering the validated scaffold threw an error:',
+        renderError,
+        'Scaffold:',
+        outcome.scaffold,
+      )
+      setState((prev) => ({
+        ...prev,
+        status: 'error',
+        errorMessage: 'The scaffold passed validation but failed to render. See the browser console for details.',
+      }))
+    }
+  }, [provider, messages, coverage, decisions, state.lineages, state.openRevisions, commitRegenerationWithRevisions])
+
+  const regenerateWithRevisions = useCallback(() => {
+    void runRegenerateWithRevisions()
+  }, [runRegenerateWithRevisions])
 
   const runRevise = useCallback(
     async (request: string): Promise<void> => {
@@ -327,8 +447,8 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
         const totals = countDiffTotals(diff)
         const isNoOp = totals.added === 0 && totals.removed === 0 && totals.modified === 0
         const confirmedRevisionMessages: LLMMessage[] = [...requestMessages, { role: 'assistant', content: summary }]
-        const confirmedRevisionHistory: RevisionHistoryEntry[] = [
-          ...state.revisionHistory,
+        const confirmedOpenRevisions: RevisionHistoryEntry[] = [
+          ...state.openRevisions,
           {
             request,
             diff,
@@ -338,14 +458,15 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
             nextSlicePlanText: slicePlanText,
           },
         ]
-        persistScaffold(outcome.scaffold, confirmedRevisionMessages, confirmedRevisionHistory)
+        persistScaffold(outcome.scaffold, confirmedRevisionMessages, state.lineages, confirmedOpenRevisions)
         setState({
           status: 'done',
           scaffold: outcome.scaffold,
           claudeMdText,
           slicePlanText,
           revisionMessages: confirmedRevisionMessages,
-          revisionHistory: confirmedRevisionHistory,
+          lineages: state.lineages,
+          openRevisions: confirmedOpenRevisions,
           lastDiffSummary: summary,
           noOpWarning: isNoOp
             ? 'The model returned no changes for that request — try rephrasing.'
@@ -360,7 +481,7 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
         }))
       }
     },
-    [provider, state.scaffold, state.revisionMessages, state.revisionHistory],
+    [provider, state.scaffold, state.claudeMdText, state.slicePlanText, state.revisionMessages, state.lineages, state.openRevisions],
   )
 
   const revise = useCallback(
@@ -374,5 +495,5 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
     setState((prev) => ({ ...prev, status: 'idle', errorMessage: undefined }))
   }, [])
 
-  return { state, generate, revise, dismissError }
+  return { state, generate, regenerateWithRevisions, revise, dismissError }
 }
