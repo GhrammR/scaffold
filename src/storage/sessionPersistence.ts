@@ -11,6 +11,7 @@ export interface PersistedSession {
   readyToGenerate: boolean
   doneWarning?: string
   generatedScaffold?: GeneratedScaffold
+  revisionMessages?: LLMMessage[]
 }
 
 export function loadSession(): PersistedSession | null {

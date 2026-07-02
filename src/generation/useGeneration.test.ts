@@ -133,3 +133,91 @@ describe('useGeneration', () => {
     expect(restored.current.state.claudeMdText).toContain('A recipe app.')
   })
 })
+
+describe('useGeneration revision', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
+  async function generateThenRevise(revisedScaffolds: (GeneratedScaffold | Error | { malformed: true })[]) {
+    const provider = fakeProvider([goodScaffold(), ...revisedScaffolds])
+    const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    return { provider, result }
+  }
+
+  it('skips the hard/soft cross-check during revision, even though the interview decisions log has a hard entry', async () => {
+    const { result } = await generateThenRevise([goodScaffold({ hardInvariants: [] })])
+
+    act(() => result.current.revise('Actually, drop the payment-details rule entirely.'))
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    // A single call, not the retry-with-correction loop that would fire if the
+    // hard/soft cross-check against the interview's decisions log still ran.
+    expect(result.current.state.claudeMdText).not.toContain('Never store payment details.')
+  })
+
+  it('updates rendered text in place and appends the request plus a computed confirmation to revisionMessages', async () => {
+    const revised = goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] })
+    const { result } = await generateThenRevise([revised])
+
+    act(() => result.current.revise('Add a hard rule that tests run before every commit.'))
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    expect(result.current.state.claudeMdText).toContain('Tests run before every commit.')
+    expect(result.current.state.lastDiffSummary).toContain('Tests run before every commit.')
+
+    const userTurns = result.current.state.revisionMessages.filter((m) => m.role === 'user')
+    const assistantTurns = result.current.state.revisionMessages.filter((m) => m.role === 'assistant')
+    expect(userTurns).toHaveLength(1)
+    expect(userTurns[0].content).toBe('Add a hard rule that tests run before every commit.')
+    expect(assistantTurns).toHaveLength(1)
+    expect(assistantTurns[0].content).toBe(result.current.state.lastDiffSummary)
+  })
+
+  it('sends a revision request ending on a user turn, without an extra trailing instruction appended', async () => {
+    const revised = goodScaffold()
+    const { provider, result } = await generateThenRevise([revised])
+
+    act(() => result.current.revise('Make the styling decision hard, not soft.'))
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    const revisionCall = (provider.complete as ReturnType<typeof vi.fn>).mock.calls[1][0]
+    expect(revisionCall.messages.at(-1)).toEqual({
+      role: 'user',
+      content: 'Make the styling decision hard, not soft.',
+    })
+  })
+
+  it('surfaces the same staged error messages on a revision failure', async () => {
+    const { result } = await generateThenRevise([{ malformed: true }, { malformed: true }])
+
+    act(() => result.current.revise('Add something invalid.'))
+    await waitFor(() => expect(result.current.state.status).toBe('error'))
+    expect(result.current.state.errorMessage).toContain('did not match the expected shape')
+  })
+
+  it('resets revisionMessages when generate() (Regenerate) runs again', async () => {
+    const { result } = await generateThenRevise([goodScaffold()])
+
+    act(() => result.current.revise('A small tweak.'))
+    await waitFor(() => expect(result.current.state.revisionMessages.length).toBeGreaterThan(0))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+    expect(result.current.state.revisionMessages).toEqual([])
+  })
+
+  it('persists revisionMessages across a simulated refresh', async () => {
+    const { provider, result } = await generateThenRevise([goodScaffold()])
+
+    act(() => result.current.revise('A small tweak.'))
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    const { result: restored } = renderHook(() => useGeneration(provider, [], [], []))
+    expect(restored.current.state.revisionMessages.some((m) => m.content === 'A small tweak.')).toBe(true)
+  })
+})
