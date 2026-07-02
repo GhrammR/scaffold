@@ -7,11 +7,20 @@ import { buildGenerationSystemPrompt } from './generationSystemPrompt'
 import { buildRevisionSystemPrompt } from './revisionSystemPrompt'
 import { renderClaudeMd, renderSlicePlan } from './renderMarkdown'
 import { validateScaffold } from './validateScaffold'
-import { diffScaffold, summarizeDiff } from './diffScaffold'
+import { countDiffTotals, diffScaffold, summarizeDiff, type ScaffoldDiffSummary } from './diffScaffold'
 import type { GeneratedScaffold } from './types'
 import { loadSession, saveSession } from '../storage/sessionPersistence'
 
 export type GenerationStatus = 'idle' | 'loading' | 'error' | 'done'
+
+export interface RevisionHistoryEntry {
+  request: string
+  diff: ScaffoldDiffSummary
+  previousClaudeMdText: string
+  nextClaudeMdText: string
+  previousSlicePlanText: string
+  nextSlicePlanText: string
+}
 
 export interface UseGenerationState {
   status: GenerationStatus
@@ -20,31 +29,62 @@ export interface UseGenerationState {
   claudeMdText?: string
   slicePlanText?: string
   revisionMessages: LLMMessage[]
+  revisionHistory: RevisionHistoryEntry[]
   lastDiffSummary?: string
+  noOpWarning?: string
 }
 
-// The model occasionally stringifies claudeMd or slicePlan (returning escaped JSON
-// text instead of a structured object) despite the schema requiring an object.
-// Before rejecting the shape, try to recover by parsing any stringified sub-object.
-function normalizeScaffoldInput(input: unknown): unknown {
-  if (typeof input !== 'object' || input === null) return input
-  const candidate = input as Record<string, unknown>
-  const normalized: Record<string, unknown> = { ...candidate }
+// The model occasionally stringifies parts of the structured tool output (returning
+// escaped JSON text instead of the object/array the schema requires) — sometimes the
+// whole input, sometimes just claudeMd or slicePlan, sometimes a field nested inside
+// one of those. Before rejecting the shape, try to recover every level of this.
+function tryParseJSON(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value // Not valid JSON either — leave unchanged; the shape check downstream will reject it.
+  }
+}
 
-  if (typeof normalized.claudeMd === 'string') {
-    try {
-      normalized.claudeMd = JSON.parse(normalized.claudeMd)
-    } catch {
-      // Not valid JSON either — leave as-is, isGeneratedScaffold will reject it.
+function normalizeScaffoldInput(input: unknown): unknown {
+  // Whole tool input arrived as a JSON string instead of an object.
+  const working = tryParseJSON(input)
+  if (typeof working !== 'object' || working === null) return working
+
+  const normalized: Record<string, unknown> = { ...(working as Record<string, unknown>) }
+
+  normalized.claudeMd = tryParseJSON(normalized.claudeMd)
+  normalized.slicePlan = tryParseJSON(normalized.slicePlan)
+
+  if (typeof normalized.claudeMd === 'object' && normalized.claudeMd !== null) {
+    const claudeMd: Record<string, unknown> = { ...(normalized.claudeMd as Record<string, unknown>) }
+
+    // The model sometimes stuffs the whole scaffold into claudeMd (occasionally
+    // as a single stringified blob), nesting slicePlan inside it instead of
+    // returning it as a top-level sibling key. If there's no valid top-level
+    // slicePlan already, lift a nested one out of claudeMd up to the top level.
+    const hasValidTopLevelSlicePlan =
+      typeof normalized.slicePlan === 'object' &&
+      normalized.slicePlan !== null &&
+      Array.isArray((normalized.slicePlan as Record<string, unknown>).slices)
+    if (!hasValidTopLevelSlicePlan && 'slicePlan' in claudeMd) {
+      normalized.slicePlan = tryParseJSON(claudeMd.slicePlan)
+      delete claudeMd.slicePlan
     }
-  }
-  if (typeof normalized.slicePlan === 'string') {
-    try {
-      normalized.slicePlan = JSON.parse(normalized.slicePlan)
-    } catch {
-      // Not valid JSON either — leave as-is, isGeneratedScaffold will reject it.
+
+    for (const field of ['hardInvariants', 'softDecisions', 'knownForks', 'conventions']) {
+      claudeMd[field] = tryParseJSON(claudeMd[field])
     }
+    normalized.claudeMd = claudeMd
   }
+
+  if (typeof normalized.slicePlan === 'object' && normalized.slicePlan !== null) {
+    const slicePlan: Record<string, unknown> = { ...(normalized.slicePlan as Record<string, unknown>) }
+    slicePlan.slices = tryParseJSON(slicePlan.slices)
+    normalized.slicePlan = slicePlan
+  }
+
   return normalized
 }
 
@@ -75,12 +115,17 @@ function initialState(): UseGenerationState {
       claudeMdText: renderClaudeMd(persisted.generatedScaffold.claudeMd),
       slicePlanText: renderSlicePlan(persisted.generatedScaffold.slicePlan),
       revisionMessages: persisted.revisionMessages ?? [],
+      revisionHistory: persisted.revisionHistory ?? [],
     }
   }
-  return { status: 'idle', revisionMessages: [] }
+  return { status: 'idle', revisionMessages: [], revisionHistory: [] }
 }
 
-function persistScaffold(scaffold: GeneratedScaffold, revisionMessages: LLMMessage[]): void {
+function persistScaffold(
+  scaffold: GeneratedScaffold,
+  revisionMessages: LLMMessage[],
+  revisionHistory: RevisionHistoryEntry[],
+): void {
   const existing = loadSession()
   saveSession({
     messages: existing?.messages ?? [],
@@ -90,6 +135,7 @@ function persistScaffold(scaffold: GeneratedScaffold, revisionMessages: LLMMessa
     doneWarning: existing?.doneWarning,
     generatedScaffold: scaffold,
     revisionMessages,
+    revisionHistory,
   })
 }
 
@@ -130,9 +176,17 @@ async function attemptScaffoldCall(
     const normalizedInput = normalizeScaffoldInput(response.toolUse.input)
     if (!isGeneratedScaffold(normalizedInput)) {
       console.error(
-        `[${logLabel}] Tool output did not match the expected GeneratedScaffold shape (even after attempting to recover stringified sub-fields). Raw tool_use input:`,
-        response.toolUse.input,
+        `[${logLabel}] Tool output did not match the expected GeneratedScaffold shape (even after attempting to recover stringified sub-fields).`,
       )
+      console.error(`[${logLabel}] Raw tool_use input (inspectable object):`, response.toolUse.input)
+      try {
+        console.error(
+          `[${logLabel}] Raw tool_use input (JSON, copy/paste-able):\n${JSON.stringify(response.toolUse.input, null, 2)}`,
+        )
+      } catch (stringifyError) {
+        console.error(`[${logLabel}] Raw tool_use input could not be JSON.stringify'd:`, stringifyError)
+      }
+      console.error(`[${logLabel}] Input after normalization attempts (still invalid):`, normalizedInput)
       return {
         kind: 'retryable',
         correction:
@@ -212,14 +266,16 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
       const slicePlanText = renderSlicePlan(outcome.scaffold.slicePlan)
       // A fresh generation starts a new scaffold lineage — any prior revision
       // conversation was about the old scaffold and shouldn't carry over.
-      persistScaffold(outcome.scaffold, [])
+      persistScaffold(outcome.scaffold, [], [])
       setState({
         status: 'done',
         scaffold: outcome.scaffold,
         claudeMdText,
         slicePlanText,
         revisionMessages: [],
+        revisionHistory: [],
         lastDiffSummary: undefined,
+        noOpWarning: undefined,
       })
     } catch (renderError) {
       console.error('[generation] Rendering the validated scaffold threw an error:', renderError, 'Scaffold:', outcome.scaffold)
@@ -239,6 +295,10 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
     async (request: string): Promise<void> => {
       const currentScaffold = state.scaffold
       if (!currentScaffold) return
+      // Captured before setState overwrites them — these are the rendered
+      // texts the inline line-level diff will compare against.
+      const previousClaudeMdText = state.claudeMdText ?? renderClaudeMd(currentScaffold.claudeMd)
+      const previousSlicePlanText = state.slicePlanText ?? renderSlicePlan(currentScaffold.slicePlan)
 
       const requestMessages: LLMMessage[] = [...state.revisionMessages, { role: 'user', content: request }]
       setState((prev) => ({ ...prev, status: 'loading', errorMessage: undefined, revisionMessages: requestMessages }))
@@ -260,18 +320,36 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
       }
 
       try {
-        const summary = summarizeDiff(diffScaffold(currentScaffold, outcome.scaffold))
+        const diff = diffScaffold(currentScaffold, outcome.scaffold)
+        const summary = summarizeDiff(diff)
         const claudeMdText = renderClaudeMd(outcome.scaffold.claudeMd)
         const slicePlanText = renderSlicePlan(outcome.scaffold.slicePlan)
+        const totals = countDiffTotals(diff)
+        const isNoOp = totals.added === 0 && totals.removed === 0 && totals.modified === 0
         const confirmedRevisionMessages: LLMMessage[] = [...requestMessages, { role: 'assistant', content: summary }]
-        persistScaffold(outcome.scaffold, confirmedRevisionMessages)
+        const confirmedRevisionHistory: RevisionHistoryEntry[] = [
+          ...state.revisionHistory,
+          {
+            request,
+            diff,
+            previousClaudeMdText,
+            nextClaudeMdText: claudeMdText,
+            previousSlicePlanText,
+            nextSlicePlanText: slicePlanText,
+          },
+        ]
+        persistScaffold(outcome.scaffold, confirmedRevisionMessages, confirmedRevisionHistory)
         setState({
           status: 'done',
           scaffold: outcome.scaffold,
           claudeMdText,
           slicePlanText,
           revisionMessages: confirmedRevisionMessages,
+          revisionHistory: confirmedRevisionHistory,
           lastDiffSummary: summary,
+          noOpWarning: isNoOp
+            ? 'The model returned no changes for that request — try rephrasing.'
+            : undefined,
         })
       } catch (renderError) {
         console.error('[revision] Rendering the revised scaffold threw an error:', renderError, 'Scaffold:', outcome.scaffold)
@@ -282,7 +360,7 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
         }))
       }
     },
-    [provider, state.scaffold, state.revisionMessages],
+    [provider, state.scaffold, state.revisionMessages, state.revisionHistory],
   )
 
   const revise = useCallback(

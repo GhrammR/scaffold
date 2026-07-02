@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffScaffold, summarizeDiff } from './diffScaffold'
+import { countDiffTotals, diffScaffold, summarizeDiff } from './diffScaffold'
 import type { GeneratedScaffold } from './types'
 
 const base: GeneratedScaffold = {
@@ -97,5 +97,46 @@ describe('summarizeDiff', () => {
     expect(summary).toContain('Tests run before every commit.')
     expect(summary).toContain('Unchanged:')
     expect(summary).toContain('soft decisions')
+  })
+})
+
+describe('countDiffTotals', () => {
+  it('reports all zeros when nothing differs', () => {
+    expect(countDiffTotals(diffScaffold(base, base))).toEqual({ added: 0, removed: 0, modified: 0 })
+  })
+
+  it('counts added and removed items across plain string list fields', () => {
+    const next: GeneratedScaffold = {
+      ...base,
+      claudeMd: {
+        ...base.claudeMd,
+        hardInvariants: ['Tests run before every commit.'],
+        conventions: [...base.claudeMd.conventions, 'Use 2-space indentation.'],
+      },
+    }
+    const totals = countDiffTotals(diffScaffold(base, next))
+    // hardInvariants: -1 (old invariant) +1 (new invariant); conventions: +1
+    expect(totals).toEqual({ added: 2, removed: 1, modified: 0 })
+  })
+
+  it('counts modified entries in keyed list fields separately from added/removed', () => {
+    const next: GeneratedScaffold = {
+      ...base,
+      claudeMd: {
+        ...base.claudeMd,
+        softDecisions: [{ decision: 'Use SQLite.', reason: 'A different reason now.' }],
+      },
+    }
+    const totals = countDiffTotals(diffScaffold(base, next))
+    expect(totals).toEqual({ added: 0, removed: 0, modified: 1 })
+  })
+
+  it('counts a changed prose field as one modification', () => {
+    const next: GeneratedScaffold = {
+      ...base,
+      claudeMd: { ...base.claudeMd, projectSummary: 'A scientific calculator.', stackArchitecture: 'Vue instead.' },
+    }
+    const totals = countDiffTotals(diffScaffold(base, next))
+    expect(totals).toEqual({ added: 0, removed: 0, modified: 2 })
   })
 })

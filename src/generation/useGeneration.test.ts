@@ -134,6 +134,79 @@ describe('useGeneration', () => {
     expect(result.current.state.slicePlanText).toContain('Slice 1')
   })
 
+  it('recovers when the ENTIRE tool input arrives as a JSON string instead of an object', async () => {
+    const scaffold = goodScaffold()
+    const stringifiedWholeInput = JSON.stringify(scaffold)
+    const provider = fakeProvider([{ rawInput: stringifiedWholeInput }])
+    const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    expect(provider.complete).toHaveBeenCalledTimes(1)
+    expect(result.current.state.claudeMdText).toContain('A recipe app.')
+  })
+
+  it('recovers when a nested field (hardInvariants) arrives as a JSON string instead of an array', async () => {
+    const scaffold = goodScaffold()
+    const stringifiedInput = {
+      claudeMd: { ...scaffold.claudeMd, hardInvariants: JSON.stringify(scaffold.claudeMd.hardInvariants) },
+      slicePlan: scaffold.slicePlan,
+    }
+    const provider = fakeProvider([{ rawInput: stringifiedInput }])
+    const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    expect(provider.complete).toHaveBeenCalledTimes(1)
+    expect(result.current.state.claudeMdText).toContain('Never store payment details.')
+  })
+
+  it('recovers when claudeMd is stringified AND a nested field inside it is also stringified', async () => {
+    const scaffold = goodScaffold()
+    const doublyNestedClaudeMd = JSON.stringify({
+      ...scaffold.claudeMd,
+      conventions: JSON.stringify(['Use Prettier defaults.']),
+    })
+    const stringifiedInput = { claudeMd: doublyNestedClaudeMd, slicePlan: scaffold.slicePlan }
+    const provider = fakeProvider([{ rawInput: stringifiedInput }])
+    const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    expect(provider.complete).toHaveBeenCalledTimes(1)
+    expect(result.current.state.claudeMdText).toContain('Use Prettier defaults.')
+  })
+
+  it('recovers when slicePlan is misplaced INSIDE a stringified claudeMd instead of a top-level sibling', async () => {
+    // Exact shape reported from a real run: the tool input has only one
+    // top-level key, "claudeMd", whose value is a stringified JSON blob that
+    // itself contains both the claudeMd fields AND a nested "slicePlan" key.
+    const scaffold = goodScaffold()
+    const claudeMdWithNestedSlicePlan = JSON.stringify({
+      ...scaffold.claudeMd,
+      slicePlan: scaffold.slicePlan,
+    })
+    const rawInput = { claudeMd: claudeMdWithNestedSlicePlan }
+    const provider = fakeProvider([{ rawInput }])
+    const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    // Recovered on the first attempt — no retry needed.
+    expect(provider.complete).toHaveBeenCalledTimes(1)
+    expect(result.current.state.claudeMdText).toContain('A recipe app.')
+    expect(result.current.state.slicePlanText).toContain('Slice 1')
+
+    // slicePlan must be lifted to the top level and removed from inside claudeMd.
+    const recoveredScaffold = result.current.state.scaffold
+    expect(recoveredScaffold?.slicePlan.slices).toEqual(scaffold.slicePlan.slices)
+    expect(recoveredScaffold?.claudeMd).not.toHaveProperty('slicePlan')
+  })
+
   it('still surfaces a shape error if the stringified field is not valid JSON', async () => {
     const provider = fakeProvider([{ rawInput: { claudeMd: 'not valid json {', slicePlan: { slices: [] } } }])
     const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], []))
@@ -254,18 +327,21 @@ describe('useGeneration revision', () => {
     expect(result.current.state.errorMessage).toContain('did not match the expected shape')
   })
 
-  it('resets revisionMessages when generate() (Regenerate) runs again', async () => {
+  it('resets revisionMessages and revisionHistory when generate() (Regenerate) runs again', async () => {
     const { result } = await generateThenRevise([goodScaffold()])
 
     act(() => result.current.revise('A small tweak.'))
-    await waitFor(() => expect(result.current.state.revisionMessages.length).toBeGreaterThan(0))
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+    expect(result.current.state.revisionMessages.length).toBeGreaterThan(0)
+    expect(result.current.state.revisionHistory.length).toBeGreaterThan(0)
 
     act(() => result.current.generate())
     await waitFor(() => expect(result.current.state.status).toBe('done'))
     expect(result.current.state.revisionMessages).toEqual([])
+    expect(result.current.state.revisionHistory).toEqual([])
   })
 
-  it('persists revisionMessages across a simulated refresh', async () => {
+  it('persists revisionMessages and revisionHistory across a simulated refresh', async () => {
     const { provider, result } = await generateThenRevise([goodScaffold()])
 
     act(() => result.current.revise('A small tweak.'))
@@ -273,5 +349,99 @@ describe('useGeneration revision', () => {
 
     const { result: restored } = renderHook(() => useGeneration(provider, [], [], []))
     expect(restored.current.state.revisionMessages.some((m) => m.content === 'A small tweak.')).toBe(true)
+    expect(restored.current.state.revisionHistory.some((entry) => entry.request === 'A small tweak.')).toBe(true)
+  })
+
+  it('appends a structured entry (request + diff) to revisionHistory on each successful revision', async () => {
+    const revised = goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] })
+    const { result } = await generateThenRevise([revised])
+
+    act(() => result.current.revise('Add a hard rule that tests run before every commit.'))
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    expect(result.current.state.revisionHistory).toHaveLength(1)
+    expect(result.current.state.revisionHistory[0].request).toBe('Add a hard rule that tests run before every commit.')
+    expect(result.current.state.revisionHistory[0].diff.hardInvariants.added).toContain('Tests run before every commit.')
+  })
+
+  it('captures the before/after rendered text for each revision, for the inline line-level diff', async () => {
+    const revised = goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] })
+    const { result } = await generateThenRevise([revised])
+
+    const claudeMdBefore = result.current.state.claudeMdText
+    act(() => result.current.revise('Add a hard rule that tests run before every commit.'))
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    const entry = result.current.state.revisionHistory[0]
+    expect(entry.previousClaudeMdText).toBe(claudeMdBefore)
+    expect(entry.nextClaudeMdText).toContain('Tests run before every commit.')
+    expect(entry.nextClaudeMdText).not.toBe(entry.previousClaudeMdText)
+  })
+
+  it('regression: a revision that genuinely changes wording produces a non-empty diff, not "no changes"', async () => {
+    // Mirrors the real scenario that regressed: replacing one hard invariant's
+    // wording (divide-by-zero -> negative-sqrt) must show up as a real diff,
+    // not report identical before/after because of a stale capture.
+    const revised = goodScaffold({ hardInvariants: ['Negative square root must show an error.'] })
+    const { result } = await generateThenRevise([revised])
+
+    const claudeMdBefore = result.current.state.claudeMdText
+    act(() => result.current.revise('Replace the divide-by-zero rule with a rule about negative square roots.'))
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    const entry = result.current.state.revisionHistory[0]
+
+    // The core regression: before/after text must genuinely differ.
+    expect(entry.previousClaudeMdText).toBe(claudeMdBefore)
+    expect(entry.nextClaudeMdText).not.toBe(entry.previousClaudeMdText)
+
+    // The field-level diff must reflect the swap, not report empty lists.
+    expect(entry.diff.hardInvariants.removed).toContain('Never store payment details.')
+    expect(entry.diff.hardInvariants.added).toContain('Negative square root must show an error.')
+    const totalChanges =
+      entry.diff.hardInvariants.added.length +
+      entry.diff.hardInvariants.removed.length +
+      entry.diff.softDecisions.added.length +
+      entry.diff.softDecisions.removed.length +
+      entry.diff.softDecisions.modified.length
+    expect(totalChanges).toBeGreaterThan(0)
+  })
+
+  it('sets noOpWarning when the model returns an unchanged scaffold for a revision request', async () => {
+    // The model returns the exact same content as the current scaffold (a
+    // genuine no-op) — this should surface a clear notice, not a silent
+    // empty "No changes" with nothing explaining why.
+    const { result } = await generateThenRevise([goodScaffold()])
+
+    act(() => result.current.revise('Make it better somehow.'))
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    expect(result.current.state.noOpWarning).toBe('The model returned no changes for that request — try rephrasing.')
+    expect(result.current.state.revisionHistory[0].nextClaudeMdText).toBe(
+      result.current.state.revisionHistory[0].previousClaudeMdText,
+    )
+  })
+
+  it('clears noOpWarning once a subsequent revision genuinely changes something', async () => {
+    const changed = goodScaffold({ conventions: ['Use tabs.'] })
+    const { result } = await generateThenRevise([goodScaffold(), changed])
+
+    act(() => result.current.revise('Make it better somehow.'))
+    await waitFor(() => expect(result.current.state.noOpWarning).toBeTruthy())
+
+    act(() => result.current.revise('Add a convention: use tabs.'))
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+    expect(result.current.state.noOpWarning).toBeUndefined()
+  })
+
+  it('clears noOpWarning on a fresh generate() (Regenerate)', async () => {
+    const { result } = await generateThenRevise([goodScaffold()])
+
+    act(() => result.current.revise('Make it better somehow.'))
+    await waitFor(() => expect(result.current.state.noOpWarning).toBeTruthy())
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+    expect(result.current.state.noOpWarning).toBeUndefined()
   })
 })

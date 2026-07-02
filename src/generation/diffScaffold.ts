@@ -76,6 +76,34 @@ export function diffScaffold(previous: GeneratedScaffold, next: GeneratedScaffol
   }
 }
 
+export interface DiffTotals {
+  added: number
+  removed: number
+  modified: number
+}
+
+export function countDiffTotals(diff: ScaffoldDiffSummary): DiffTotals {
+  let added = 0
+  let removed = 0
+  let modified = 0
+
+  if (diff.projectSummaryChanged) modified += 1
+  if (diff.stackArchitectureChanged) modified += 1
+
+  for (const listDiff of [diff.hardInvariants, diff.conventions]) {
+    added += listDiff.added.length
+    removed += listDiff.removed.length
+  }
+
+  for (const keyedDiff of [diff.softDecisions, diff.knownForks, diff.slices]) {
+    added += keyedDiff.added.length
+    removed += keyedDiff.removed.length
+    modified += keyedDiff.modified.length
+  }
+
+  return { added, removed, modified }
+}
+
 function describeListDiff(label: string, diff: ListDiff): string | null {
   const parts: string[] = []
   if (diff.added.length > 0) parts.push(`+${diff.added.length}: ${diff.added.join('; ')}`)
