@@ -6,6 +6,13 @@ import { buildSystemPrompt } from './systemPrompt'
 import type { CoverageStatus, Decision, InterviewTurn } from './types'
 import { clearSession, loadSession, saveSession } from '../storage/sessionPersistence'
 
+function persistInterviewFields(
+  next: Pick<UseInterviewState, 'messages' | 'coverage' | 'decisions' | 'readyToGenerate' | 'doneWarning'>,
+): void {
+  const existing = loadSession()
+  saveSession({ ...existing, ...next })
+}
+
 export type InterviewStatus = 'idle' | 'loading' | 'error'
 
 export interface UseInterviewState {
@@ -56,12 +63,7 @@ function initialState(): UseInterviewState {
 export function useInterview(provider: LLMProvider) {
   const [state, setState] = useState<UseInterviewState>(initialState)
 
-  const persist = useCallback(
-    (next: Pick<UseInterviewState, 'messages' | 'coverage' | 'decisions' | 'readyToGenerate' | 'doneWarning'>) => {
-      saveSession(next)
-    },
-    [],
-  )
+  const persist = useCallback(persistInterviewFields, [])
 
   const runTurn = useCallback(
     async (nextMessages: LLMMessage[], attempt = 0): Promise<void> => {

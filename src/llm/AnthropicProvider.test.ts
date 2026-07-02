@@ -15,7 +15,10 @@ vi.mock('@anthropic-ai/sdk', async () => {
     ...actual,
     default: Object.assign(FakeAnthropic, {
       AuthenticationError: actual.AuthenticationError,
+      PermissionDeniedError: actual.PermissionDeniedError,
       RateLimitError: actual.RateLimitError,
+      NotFoundError: actual.NotFoundError,
+      BadRequestError: actual.BadRequestError,
       APIConnectionError: actual.APIConnectionError,
       APIError: actual.APIError,
     }),
@@ -78,5 +81,29 @@ describe('AnthropicProvider', () => {
     await expect(
       provider.complete({ system: 's', messages: [] }),
     ).rejects.toMatchObject({ kind: 'network' })
+  })
+
+  it('maps BadRequestError to a server LLMProviderError and surfaces the underlying detail', async () => {
+    const err = Object.create(Anthropic.BadRequestError.prototype)
+    err.message = 'invalid_request_error: tools.0.name: unrecognized field'
+    createMock.mockRejectedValue(err)
+
+    const provider = new AnthropicProvider('sk-ant-test')
+    await expect(provider.complete({ system: 's', messages: [] })).rejects.toMatchObject({
+      kind: 'server',
+      message: expect.stringContaining('invalid_request_error: tools.0.name'),
+    })
+  })
+
+  it('does not collapse a generic APIError into a message with no detail', async () => {
+    const err = Object.create(Anthropic.APIError.prototype)
+    err.message = 'model: claude-sonnet-5 is not found'
+    err.status = 404
+    createMock.mockRejectedValue(err)
+
+    const provider = new AnthropicProvider('sk-ant-test')
+    await expect(provider.complete({ system: 's', messages: [] })).rejects.toMatchObject({
+      message: expect.stringContaining('model: claude-sonnet-5 is not found'),
+    })
   })
 })

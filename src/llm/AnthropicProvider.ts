@@ -46,16 +46,34 @@ export class AnthropicProvider implements LLMProvider {
 
 function mapAnthropicError(error: unknown): LLMProviderError {
   if (error instanceof Anthropic.AuthenticationError) {
-    return new LLMProviderError('auth', 'Your API key was rejected. Check it in Settings.')
+    return new LLMProviderError('auth', `Your API key was rejected. Check it in Settings. (${error.message})`)
+  }
+  if (error instanceof Anthropic.PermissionDeniedError) {
+    return new LLMProviderError(
+      'auth',
+      `Your API key doesn't have permission for this request. (${error.message})`,
+    )
   }
   if (error instanceof Anthropic.RateLimitError) {
-    return new LLMProviderError('rate_limit', 'Rate limited. Please wait a moment and try again.')
+    return new LLMProviderError('rate_limit', `Rate limited. Please wait a moment and try again. (${error.message})`)
+  }
+  if (error instanceof Anthropic.NotFoundError) {
+    return new LLMProviderError('server', `The API could not find the requested resource. (${error.message})`)
+  }
+  if (error instanceof Anthropic.BadRequestError) {
+    return new LLMProviderError('server', `The request was invalid: ${error.message}`)
   }
   if (error instanceof Anthropic.APIConnectionError) {
-    return new LLMProviderError('network', 'Network error reaching the API. Check your connection and try again.')
+    return new LLMProviderError(
+      'network',
+      `Network error reaching the API. Check your connection and try again. (${error.message})`,
+    )
   }
   if (error instanceof Anthropic.APIError) {
-    return new LLMProviderError('server', 'The API returned an error. Please try again.')
+    return new LLMProviderError('server', `The API returned an error (status ${error.status}): ${error.message}`)
+  }
+  if (error instanceof Error) {
+    return new LLMProviderError('unknown', `Something went wrong: ${error.message}`)
   }
   return new LLMProviderError('unknown', 'Something went wrong. Please try again.')
 }

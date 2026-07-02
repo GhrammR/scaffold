@@ -1,5 +1,6 @@
 import type { LLMMessage } from '../llm/LLMProvider'
 import type { CoverageStatus, Decision } from '../interview/types'
+import type { GeneratedScaffold } from '../generation/types'
 
 const STORAGE_KEY = 'scaffold:interviewSession'
 
@@ -9,6 +10,7 @@ export interface PersistedSession {
   decisions: Decision[]
   readyToGenerate: boolean
   doneWarning?: string
+  generatedScaffold?: GeneratedScaffold
 }
 
 export function loadSession(): PersistedSession | null {
