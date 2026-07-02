@@ -23,6 +23,31 @@ export interface UseGenerationState {
   lastDiffSummary?: string
 }
 
+// The model occasionally stringifies claudeMd or slicePlan (returning escaped JSON
+// text instead of a structured object) despite the schema requiring an object.
+// Before rejecting the shape, try to recover by parsing any stringified sub-object.
+function normalizeScaffoldInput(input: unknown): unknown {
+  if (typeof input !== 'object' || input === null) return input
+  const candidate = input as Record<string, unknown>
+  const normalized: Record<string, unknown> = { ...candidate }
+
+  if (typeof normalized.claudeMd === 'string') {
+    try {
+      normalized.claudeMd = JSON.parse(normalized.claudeMd)
+    } catch {
+      // Not valid JSON either — leave as-is, isGeneratedScaffold will reject it.
+    }
+  }
+  if (typeof normalized.slicePlan === 'string') {
+    try {
+      normalized.slicePlan = JSON.parse(normalized.slicePlan)
+    } catch {
+      // Not valid JSON either — leave as-is, isGeneratedScaffold will reject it.
+    }
+  }
+  return normalized
+}
+
 function isGeneratedScaffold(input: unknown): input is GeneratedScaffold {
   if (typeof input !== 'object' || input === null) return false
   const candidate = input as Record<string, unknown>
@@ -102,9 +127,10 @@ async function attemptScaffoldCall(
       }
     }
 
-    if (!isGeneratedScaffold(response.toolUse.input)) {
+    const normalizedInput = normalizeScaffoldInput(response.toolUse.input)
+    if (!isGeneratedScaffold(normalizedInput)) {
       console.error(
-        `[${logLabel}] Tool output did not match the expected GeneratedScaffold shape. Raw tool_use input:`,
+        `[${logLabel}] Tool output did not match the expected GeneratedScaffold shape (even after attempting to recover stringified sub-fields). Raw tool_use input:`,
         response.toolUse.input,
       )
       return {
@@ -116,7 +142,7 @@ async function attemptScaffoldCall(
       }
     }
 
-    const scaffold = response.toolUse.input
+    const scaffold = normalizedInput
     const problems = validateScaffold(scaffold, decisionsForValidation)
 
     if (problems.length > 0) {

@@ -8,7 +8,7 @@ import type { GeneratedScaffold } from './types'
 import type { Decision } from '../interview/types'
 
 function fakeProvider(
-  responses: (GeneratedScaffold | Error | { malformed: true } | { textOnly: string })[],
+  responses: (GeneratedScaffold | Error | { malformed: true } | { textOnly: string } | { rawInput: unknown })[],
 ): LLMProvider {
   let call = 0
   return {
@@ -21,6 +21,9 @@ function fakeProvider(
       }
       if ('textOnly' in next) {
         return { text: next.textOnly }
+      }
+      if ('rawInput' in next) {
+        return { toolUse: { name: SCAFFOLD_TOOL_NAME, input: next.rawInput } }
       }
       return { toolUse: { name: SCAFFOLD_TOOL_NAME, input: next } }
     }),
@@ -103,6 +106,43 @@ describe('useGeneration', () => {
     expect(result.current.state.errorMessage).toContain('did not match the expected shape')
   })
 
+  it('recovers when the model stringifies claudeMd as escaped JSON instead of a structured object', async () => {
+    const scaffold = goodScaffold()
+    const stringifiedInput = { claudeMd: JSON.stringify(scaffold.claudeMd), slicePlan: scaffold.slicePlan }
+    const provider = fakeProvider([{ rawInput: stringifiedInput }])
+    const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    // Recovered on the first attempt — no retry needed for a well-formed
+    // scaffold that was merely stringified.
+    expect(provider.complete).toHaveBeenCalledTimes(1)
+    expect(result.current.state.claudeMdText).toContain('A recipe app.')
+  })
+
+  it('recovers when the model stringifies slicePlan as escaped JSON instead of a structured object', async () => {
+    const scaffold = goodScaffold()
+    const stringifiedInput = { claudeMd: scaffold.claudeMd, slicePlan: JSON.stringify(scaffold.slicePlan) }
+    const provider = fakeProvider([{ rawInput: stringifiedInput }])
+    const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    expect(provider.complete).toHaveBeenCalledTimes(1)
+    expect(result.current.state.slicePlanText).toContain('Slice 1')
+  })
+
+  it('still surfaces a shape error if the stringified field is not valid JSON', async () => {
+    const provider = fakeProvider([{ rawInput: { claudeMd: 'not valid json {', slicePlan: { slices: [] } } }])
+    const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], []))
+
+    act(() => result.current.generate())
+    await waitFor(() => expect(result.current.state.status).toBe('error'))
+    expect(result.current.state.errorMessage).toContain('did not match the expected shape')
+  })
+
   it('surfaces a distinct error when the model returns text instead of calling the tool', async () => {
     const provider = fakeProvider([{ textOnly: 'Sure, here is your scaffold...' }, { textOnly: 'Still just text.' }])
     const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], []))
@@ -139,7 +179,9 @@ describe('useGeneration revision', () => {
     window.localStorage.clear()
   })
 
-  async function generateThenRevise(revisedScaffolds: (GeneratedScaffold | Error | { malformed: true })[]) {
+  async function generateThenRevise(
+    revisedScaffolds: (GeneratedScaffold | Error | { malformed: true } | { rawInput: unknown })[],
+  ) {
     const provider = fakeProvider([goodScaffold(), ...revisedScaffolds])
     const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
 
@@ -158,6 +200,18 @@ describe('useGeneration revision', () => {
     // A single call, not the retry-with-correction loop that would fire if the
     // hard/soft cross-check against the interview's decisions log still ran.
     expect(result.current.state.claudeMdText).not.toContain('Never store payment details.')
+  })
+
+  it('recovers a stringified claudeMd during revision too, not just first generation', async () => {
+    const revised = goodScaffold({ conventions: ['Use tabs.'] })
+    const stringifiedInput = { claudeMd: JSON.stringify(revised.claudeMd), slicePlan: revised.slicePlan }
+    const { provider, result } = await generateThenRevise([{ rawInput: stringifiedInput }])
+
+    act(() => result.current.revise('Add a convention: use tabs.'))
+    await waitFor(() => expect(result.current.state.status).toBe('done'))
+
+    expect(provider.complete).toHaveBeenCalledTimes(2) // 1 generate + 1 revise, no retry needed
+    expect(result.current.state.claudeMdText).toContain('Use tabs.')
   })
 
   it('updates rendered text in place and appends the request plus a computed confirmation to revisionMessages', async () => {
