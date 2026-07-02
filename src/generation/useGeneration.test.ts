@@ -45,6 +45,14 @@ const goodScaffold = (overrides: Partial<GeneratedScaffold['claudeMd']> = {}): G
 
 const hardDecision: Decision = { id: '1', area: 'security', summary: 'Never store payment details.', kind: 'hard' }
 
+// Hard invariants / soft decisions each get their own rule file under
+// .agent_governance/rules/, so tests that just need "is this text present
+// somewhere in the generated output" search across every file's content
+// rather than hand-computing a specific slug/path.
+function anyFileContains(fileTree: Record<string, string> | undefined, text: string): boolean {
+  return Object.values(fileTree ?? {}).some((content) => content.includes(text))
+}
+
 describe('useGeneration', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -57,8 +65,8 @@ describe('useGeneration', () => {
     act(() => result.current.generate())
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
-    expect(result.current.state.claudeMdText).toContain('A recipe app.')
-    expect(result.current.state.slicePlanText).toContain('Slice 1')
+    expect(result.current.state.fileTree?.['AGENTS.md']).toContain('A recipe app.')
+    expect(result.current.state.fileTree?.['slice-plan.md']).toContain('Slice 1')
   })
 
   it('always ends the request message list on a user turn, even when the interview transcript ends on the AI turn', async () => {
@@ -118,7 +126,7 @@ describe('useGeneration', () => {
     // Recovered on the first attempt — no retry needed for a well-formed
     // scaffold that was merely stringified.
     expect(provider.complete).toHaveBeenCalledTimes(1)
-    expect(result.current.state.claudeMdText).toContain('A recipe app.')
+    expect(result.current.state.fileTree?.['AGENTS.md']).toContain('A recipe app.')
   })
 
   it('recovers when the model stringifies slicePlan as escaped JSON instead of a structured object', async () => {
@@ -131,7 +139,7 @@ describe('useGeneration', () => {
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
     expect(provider.complete).toHaveBeenCalledTimes(1)
-    expect(result.current.state.slicePlanText).toContain('Slice 1')
+    expect(result.current.state.fileTree?.['slice-plan.md']).toContain('Slice 1')
   })
 
   it('recovers when the ENTIRE tool input arrives as a JSON string instead of an object', async () => {
@@ -144,7 +152,7 @@ describe('useGeneration', () => {
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
     expect(provider.complete).toHaveBeenCalledTimes(1)
-    expect(result.current.state.claudeMdText).toContain('A recipe app.')
+    expect(result.current.state.fileTree?.['AGENTS.md']).toContain('A recipe app.')
   })
 
   it('recovers when a nested field (hardInvariants) arrives as a JSON string instead of an array', async () => {
@@ -160,7 +168,7 @@ describe('useGeneration', () => {
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
     expect(provider.complete).toHaveBeenCalledTimes(1)
-    expect(result.current.state.claudeMdText).toContain('Never store payment details.')
+    expect(anyFileContains(result.current.state.fileTree, 'Never store payment details.')).toBe(true)
   })
 
   it('recovers when claudeMd is stringified AND a nested field inside it is also stringified', async () => {
@@ -177,7 +185,7 @@ describe('useGeneration', () => {
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
     expect(provider.complete).toHaveBeenCalledTimes(1)
-    expect(result.current.state.claudeMdText).toContain('Use Prettier defaults.')
+    expect(result.current.state.fileTree?.['AGENTS.md']).toContain('Use Prettier defaults.')
   })
 
   it('recovers when slicePlan is misplaced INSIDE a stringified claudeMd instead of a top-level sibling', async () => {
@@ -198,8 +206,8 @@ describe('useGeneration', () => {
 
     // Recovered on the first attempt — no retry needed.
     expect(provider.complete).toHaveBeenCalledTimes(1)
-    expect(result.current.state.claudeMdText).toContain('A recipe app.')
-    expect(result.current.state.slicePlanText).toContain('Slice 1')
+    expect(result.current.state.fileTree?.['AGENTS.md']).toContain('A recipe app.')
+    expect(result.current.state.fileTree?.['slice-plan.md']).toContain('Slice 1')
 
     // slicePlan must be lifted to the top level and removed from inside claudeMd.
     const recoveredScaffold = result.current.state.scaffold
@@ -243,7 +251,7 @@ describe('useGeneration', () => {
 
     const { result: restored } = renderHook(() => useGeneration(provider, [], [], []))
     expect(restored.current.state.status).toBe('done')
-    expect(restored.current.state.claudeMdText).toContain('A recipe app.')
+    expect(restored.current.state.fileTree?.['AGENTS.md']).toContain('A recipe app.')
   })
 })
 
@@ -272,7 +280,7 @@ describe('useGeneration revision', () => {
 
     // A single call, not the retry-with-correction loop that would fire if the
     // hard/soft cross-check against the interview's decisions log still ran.
-    expect(result.current.state.claudeMdText).not.toContain('Never store payment details.')
+    expect(anyFileContains(result.current.state.fileTree, 'Never store payment details.')).toBe(false)
   })
 
   it('recovers a stringified claudeMd during revision too, not just first generation', async () => {
@@ -284,7 +292,7 @@ describe('useGeneration revision', () => {
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
     expect(provider.complete).toHaveBeenCalledTimes(2) // 1 generate + 1 revise, no retry needed
-    expect(result.current.state.claudeMdText).toContain('Use tabs.')
+    expect(result.current.state.fileTree?.['AGENTS.md']).toContain('Use tabs.')
   })
 
   it('updates rendered text in place and appends the request plus a computed confirmation to revisionMessages', async () => {
@@ -294,7 +302,7 @@ describe('useGeneration revision', () => {
     act(() => result.current.revise('Add a hard rule that tests run before every commit.'))
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
-    expect(result.current.state.claudeMdText).toContain('Tests run before every commit.')
+    expect(anyFileContains(result.current.state.fileTree, 'Tests run before every commit.')).toBe(true)
     expect(result.current.state.lastDiffSummary).toContain('Tests run before every commit.')
 
     const userTurns = result.current.state.revisionMessages.filter((m) => m.role === 'user')
@@ -389,14 +397,14 @@ describe('useGeneration revision', () => {
     const revised = goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] })
     const { result } = await generateThenRevise([revised])
 
-    const claudeMdBefore = result.current.state.claudeMdText
+    const fileTreeBefore = result.current.state.fileTree
     act(() => result.current.revise('Add a hard rule that tests run before every commit.'))
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
     const entry = result.current.state.openRevisions[0]
-    expect(entry.previousClaudeMdText).toBe(claudeMdBefore)
-    expect(entry.nextClaudeMdText).toContain('Tests run before every commit.')
-    expect(entry.nextClaudeMdText).not.toBe(entry.previousClaudeMdText)
+    expect(entry.previousFileTree).toEqual(fileTreeBefore)
+    expect(anyFileContains(entry.nextFileTree, 'Tests run before every commit.')).toBe(true)
+    expect(entry.nextFileTree).not.toEqual(entry.previousFileTree)
   })
 
   it('regression: a revision that genuinely changes wording produces a non-empty diff, not "no changes"', async () => {
@@ -406,15 +414,15 @@ describe('useGeneration revision', () => {
     const revised = goodScaffold({ hardInvariants: ['Negative square root must show an error.'] })
     const { result } = await generateThenRevise([revised])
 
-    const claudeMdBefore = result.current.state.claudeMdText
+    const fileTreeBefore = result.current.state.fileTree
     act(() => result.current.revise('Replace the divide-by-zero rule with a rule about negative square roots.'))
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
     const entry = result.current.state.openRevisions[0]
 
     // The core regression: before/after text must genuinely differ.
-    expect(entry.previousClaudeMdText).toBe(claudeMdBefore)
-    expect(entry.nextClaudeMdText).not.toBe(entry.previousClaudeMdText)
+    expect(entry.previousFileTree).toEqual(fileTreeBefore)
+    expect(entry.nextFileTree).not.toEqual(entry.previousFileTree)
 
     // The field-level diff must reflect the swap, not report empty lists.
     expect(entry.diff.hardInvariants.removed).toContain('Never store payment details.')
@@ -438,8 +446,8 @@ describe('useGeneration revision', () => {
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
     expect(result.current.state.noOpWarning).toBe('The model returned no changes for that request — try rephrasing.')
-    expect(result.current.state.openRevisions[0].nextClaudeMdText).toBe(
-      result.current.state.openRevisions[0].previousClaudeMdText,
+    expect(result.current.state.openRevisions[0].nextFileTree).toEqual(
+      result.current.state.openRevisions[0].previousFileTree,
     )
   })
 
@@ -535,7 +543,7 @@ describe('useGeneration regenerateWithRevisions', () => {
       'Add a hard rule that tests run before every commit.',
       'Add a convention: use tabs.',
     ])
-    expect(result.current.state.claudeMdText).toContain('A rebuilt recipe app.')
+    expect(result.current.state.fileTree?.['AGENTS.md']).toContain('A rebuilt recipe app.')
   })
 
   it('resets revisionMessages so a later revision targets the new scaffold with a fresh thread', async () => {

@@ -5,48 +5,55 @@ function bulletList(items: string[]): string {
   return items.map((item) => `- ${item}`).join('\n')
 }
 
-export function renderClaudeMd(content: ClaudeMdContent): string {
-  const softSection =
-    content.softDecisions.length === 0
-      ? '_None established._'
-      : content.softDecisions
-          .map((d) => `- **${d.decision}**\n  Why provisional: ${d.reason}`)
-          .join('\n')
+export const CLAUDE_MD_ENTRY = `# CLAUDE.md
 
+@AGENTS.md
+
+This is the entry point for Claude Code. The canonical governance lives in
+\`.agent_governance/\` and AGENTS.md — read those on startup.
+`
+
+export function renderAgentsMd(content: ClaudeMdContent): string {
   const forksSection =
     content.knownForks.length === 0
       ? '_None surfaced._'
       : content.knownForks.map((f) => `- **${f.fork}**\n  Consideration: ${f.consideration}`).join('\n')
 
-  return `# CLAUDE.md
+  const hasHardInvariants = content.hardInvariants.length > 0
+  const hasSoftDecisions = content.softDecisions.length > 0
 
-## 1. Project Summary
+  return `# AGENTS.md
+
+## Project Summary
 
 ${content.projectSummary}
 
-## 2. Stack & Architecture
+## Stack & Architecture
 
 ${content.stackArchitecture}
 
-## 3. Hard Invariants (Never Break)
+## Non-Negotiable Invariants
 
-${bulletList(content.hardInvariants)}
+${hasHardInvariants ? 'See `.agent_governance/rules/` for the full list — each hard invariant is its own rule file.' : '_None established._'}
 
-## 4. Soft / Provisional Decisions (Flagged Changeable)
+## Soft / Provisional Decisions
 
-${softSection}
+${hasSoftDecisions ? 'See the `provisional-*.md` files under `.agent_governance/rules/` — each names why it is still changeable.' : '_None established._'}
 
-## 5. Slice Plan
-
-See slice-plan.md.
-
-## 6. Known Forks / Weak Spots
+## Known Forks / Weak Spots
 
 ${forksSection}
 
-## 7. Conventions
+## Conventions
 
 ${bulletList(content.conventions)}
+
+## Governance Layout
+
+- \`.agent_governance/README.md\` — bootstrap, read first
+- \`.agent_governance/rules/\` — hard invariants and provisional decisions (read all on startup)
+
+See slice-plan.md for the build sequence.
 `
 }
 

@@ -25,20 +25,24 @@ function sumKeyedListDiffs(diffs: KeyedListDiff[]): { added: number; removed: nu
   )
 }
 
-// Which ScaffoldDiffSummary fields live in which generated file. Extend this
-// when a new generated file gains tracked fields in ScaffoldDiffSummary.
+// Which ScaffoldDiffSummary fields live in which generated file. Hard
+// invariants and soft decisions are deliberately excluded: as of the
+// .agent_governance/ folder structure, each one is its own rule file with its
+// own Level 1/2 diff already — a separate field-level rollup for them here
+// would be redundant. What remains (prose + known forks + conventions) lives
+// in AGENTS.md; slices still live in slice-plan.md.
 export function groupDiffTotalsByFile(diff: ScaffoldDiffSummary): FileGroupTotals[] {
   const proseChanges = (diff.projectSummaryChanged ? 1 : 0) + (diff.stackArchitectureChanged ? 1 : 0)
-  const claudeMdLists = sumListDiffs([diff.hardInvariants, diff.conventions])
-  const claudeMdKeyed = sumKeyedListDiffs([diff.softDecisions, diff.knownForks])
+  const agentsMdLists = sumListDiffs([diff.conventions])
+  const agentsMdKeyed = sumKeyedListDiffs([diff.knownForks])
   const slicePlanKeyed = sumKeyedListDiffs([diff.slices])
 
   return [
     {
-      filename: 'CLAUDE.md',
-      added: claudeMdLists.added + claudeMdKeyed.added,
-      removed: claudeMdLists.removed + claudeMdKeyed.removed,
-      modified: proseChanges + claudeMdKeyed.modified,
+      filename: 'AGENTS.md',
+      added: agentsMdLists.added + agentsMdKeyed.added,
+      removed: agentsMdLists.removed + agentsMdKeyed.removed,
+      modified: proseChanges + agentsMdKeyed.modified,
     },
     {
       filename: 'slice-plan.md',

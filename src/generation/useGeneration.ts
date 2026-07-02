@@ -6,7 +6,7 @@ import { SCAFFOLD_TOOL, SCAFFOLD_TOOL_NAME } from './scaffoldTool'
 import { buildGenerationSystemPrompt } from './generationSystemPrompt'
 import { buildRevisionSystemPrompt } from './revisionSystemPrompt'
 import { buildRegenerateWithRevisionsSystemPrompt } from './regenerateWithRevisionsSystemPrompt'
-import { renderClaudeMd, renderSlicePlan } from './renderMarkdown'
+import { buildScaffoldFileTree } from './scaffoldFileTree'
 import { validateScaffold } from './validateScaffold'
 import { countDiffTotals, diffScaffold, summarizeDiff, type ScaffoldDiffSummary } from './diffScaffold'
 import type { GeneratedScaffold } from './types'
@@ -14,13 +14,22 @@ import { loadSession, saveSession } from '../storage/sessionPersistence'
 
 export type GenerationStatus = 'idle' | 'loading' | 'error' | 'done'
 
+// path -> file content, e.g. { 'CLAUDE.md': '...', '.agent_governance/rules/foo.md': '...' }
+export type ScaffoldFileTree = Record<string, string>
+
+function buildFileTree(scaffold: GeneratedScaffold): ScaffoldFileTree {
+  const tree: ScaffoldFileTree = {}
+  for (const entry of buildScaffoldFileTree(scaffold)) {
+    tree[entry.path] = entry.content
+  }
+  return tree
+}
+
 export interface RevisionHistoryEntry {
   request: string
   diff: ScaffoldDiffSummary
-  previousClaudeMdText: string
-  nextClaudeMdText: string
-  previousSlicePlanText: string
-  nextSlicePlanText: string
+  previousFileTree: ScaffoldFileTree
+  nextFileTree: ScaffoldFileTree
 }
 
 export type RegenerationKind = 'fresh' | 'with-revisions'
@@ -28,10 +37,8 @@ export type RegenerationKind = 'fresh' | 'with-revisions'
 export interface RegenerationMarker {
   kind: RegenerationKind
   diff: ScaffoldDiffSummary
-  previousClaudeMdText: string
-  nextClaudeMdText: string
-  previousSlicePlanText: string
-  nextSlicePlanText: string
+  previousFileTree: ScaffoldFileTree
+  nextFileTree: ScaffoldFileTree
 }
 
 export interface HistoryLineage {
@@ -43,8 +50,7 @@ export interface UseGenerationState {
   status: GenerationStatus
   errorMessage?: string
   scaffold?: GeneratedScaffold
-  claudeMdText?: string
-  slicePlanText?: string
+  fileTree?: ScaffoldFileTree
   revisionMessages: LLMMessage[]
   lineages: HistoryLineage[]
   openRevisions: RevisionHistoryEntry[]
@@ -130,8 +136,7 @@ function initialState(): UseGenerationState {
     return {
       status: 'done',
       scaffold: persisted.generatedScaffold,
-      claudeMdText: renderClaudeMd(persisted.generatedScaffold.claudeMd),
-      slicePlanText: renderSlicePlan(persisted.generatedScaffold.slicePlan),
+      fileTree: buildFileTree(persisted.generatedScaffold),
       revisionMessages: persisted.revisionMessages ?? [],
       lineages: persisted.lineages ?? [],
       openRevisions: persisted.openRevisions ?? [],
@@ -267,15 +272,13 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
   // first generation. The lineage/history feature is exclusive to
   // regenerateWithRevisions(); plain Regenerate never creates a lineage entry.
   const commitFreshScaffold = useCallback((freshScaffold: GeneratedScaffold): void => {
-    const claudeMdText = renderClaudeMd(freshScaffold.claudeMd)
-    const slicePlanText = renderSlicePlan(freshScaffold.slicePlan)
+    const fileTree = buildFileTree(freshScaffold)
 
     persistScaffold(freshScaffold, [], [], [])
     setState({
       status: 'done',
       scaffold: freshScaffold,
-      claudeMdText,
-      slicePlanText,
+      fileTree,
       revisionMessages: [],
       lineages: [],
       openRevisions: [],
@@ -289,22 +292,18 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
   // under it (preserving history), and commits the fresh result.
   const commitRegenerationWithRevisions = useCallback(
     (freshScaffold: GeneratedScaffold): void => {
-      const claudeMdText = renderClaudeMd(freshScaffold.claudeMd)
-      const slicePlanText = renderSlicePlan(freshScaffold.slicePlan)
+      const fileTree = buildFileTree(freshScaffold)
 
       const previousScaffold = state.scaffold
       let nextLineages = state.lineages
 
       if (previousScaffold) {
-        const previousClaudeMdText = state.claudeMdText ?? renderClaudeMd(previousScaffold.claudeMd)
-        const previousSlicePlanText = state.slicePlanText ?? renderSlicePlan(previousScaffold.slicePlan)
+        const previousFileTree = state.fileTree ?? buildFileTree(previousScaffold)
         const marker: RegenerationMarker = {
           kind: 'with-revisions',
           diff: diffScaffold(previousScaffold, freshScaffold),
-          previousClaudeMdText,
-          nextClaudeMdText: claudeMdText,
-          previousSlicePlanText,
-          nextSlicePlanText: slicePlanText,
+          previousFileTree,
+          nextFileTree: fileTree,
         }
         nextLineages = [...state.lineages, { regeneration: marker, revisions: state.openRevisions }]
       }
@@ -316,8 +315,7 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
       setState({
         status: 'done',
         scaffold: freshScaffold,
-        claudeMdText,
-        slicePlanText,
+        fileTree,
         revisionMessages: [],
         lineages: nextLineages,
         openRevisions: [],
@@ -325,7 +323,7 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
         noOpWarning: undefined,
       })
     },
-    [state.scaffold, state.claudeMdText, state.slicePlanText, state.lineages, state.openRevisions],
+    [state.scaffold, state.fileTree, state.lineages, state.openRevisions],
   )
 
   const runGenerate = useCallback(async (): Promise<void> => {
@@ -415,10 +413,9 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
     async (request: string): Promise<void> => {
       const currentScaffold = state.scaffold
       if (!currentScaffold) return
-      // Captured before setState overwrites them — these are the rendered
-      // texts the inline line-level diff will compare against.
-      const previousClaudeMdText = state.claudeMdText ?? renderClaudeMd(currentScaffold.claudeMd)
-      const previousSlicePlanText = state.slicePlanText ?? renderSlicePlan(currentScaffold.slicePlan)
+      // Captured before setState overwrites them — this is the tree the
+      // inline line-level diff will compare against.
+      const previousFileTree = state.fileTree ?? buildFileTree(currentScaffold)
 
       const requestMessages: LLMMessage[] = [...state.revisionMessages, { role: 'user', content: request }]
       setState((prev) => ({ ...prev, status: 'loading', errorMessage: undefined, revisionMessages: requestMessages }))
@@ -442,8 +439,7 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
       try {
         const diff = diffScaffold(currentScaffold, outcome.scaffold)
         const summary = summarizeDiff(diff)
-        const claudeMdText = renderClaudeMd(outcome.scaffold.claudeMd)
-        const slicePlanText = renderSlicePlan(outcome.scaffold.slicePlan)
+        const fileTree = buildFileTree(outcome.scaffold)
         const totals = countDiffTotals(diff)
         const isNoOp = totals.added === 0 && totals.removed === 0 && totals.modified === 0
         const confirmedRevisionMessages: LLMMessage[] = [...requestMessages, { role: 'assistant', content: summary }]
@@ -452,18 +448,15 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
           {
             request,
             diff,
-            previousClaudeMdText,
-            nextClaudeMdText: claudeMdText,
-            previousSlicePlanText,
-            nextSlicePlanText: slicePlanText,
+            previousFileTree,
+            nextFileTree: fileTree,
           },
         ]
         persistScaffold(outcome.scaffold, confirmedRevisionMessages, state.lineages, confirmedOpenRevisions)
         setState({
           status: 'done',
           scaffold: outcome.scaffold,
-          claudeMdText,
-          slicePlanText,
+          fileTree,
           revisionMessages: confirmedRevisionMessages,
           lineages: state.lineages,
           openRevisions: confirmedOpenRevisions,
@@ -481,7 +474,7 @@ export function useGeneration(provider: LLMProvider, messages: LLMMessage[], cov
         }))
       }
     },
-    [provider, state.scaffold, state.claudeMdText, state.slicePlanText, state.revisionMessages, state.lineages, state.openRevisions],
+    [provider, state.scaffold, state.fileTree, state.revisionMessages, state.lineages, state.openRevisions],
   )
 
   const revise = useCallback(

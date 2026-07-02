@@ -1,10 +1,11 @@
-import { useState } from 'react'
-import type { HistoryLineage, RevisionHistoryEntry, useGeneration } from './useGeneration'
+import { useEffect, useState } from 'react'
+import type { HistoryLineage, RevisionHistoryEntry, ScaffoldFileTree, useGeneration } from './useGeneration'
 import { buildScaffoldZip } from './buildZip'
 import { countDiffTotals, type KeyedListDiff, type ListDiff, type ScaffoldDiffSummary } from './diffScaffold'
-import { countLineDiff, diffLines, type LineDiffOp } from './lineDiff'
+import type { LineDiffOp } from './lineDiff'
 import { groupDiffTotalsByFile } from './diffFileGrouping'
-import { computeNamedFileDiffs } from './revisionFileDiffs'
+import { namedFileDiffsFromTrees, type NamedFileDiff } from './revisionFileDiffs'
+import { buildFileTreeHierarchy, type TreeNode } from './fileTreeHierarchy'
 
 interface GeneratedFilesViewProps {
   generation: ReturnType<typeof useGeneration>
@@ -64,11 +65,8 @@ function FilePanel({
   return (
     <div className="border rounded flex-1 flex flex-col min-h-0">
       <div className="flex items-center justify-between px-3 py-2 border-b bg-gray-50">
-        <span className="flex items-center gap-2">
-          <span className="font-mono text-sm font-semibold">{filename}</span>
-          {diffOps && <CountBadge {...countLineDiff(diffOps)} />}
-        </span>
-        <button type="button" onClick={handleCopy} className="text-xs underline">
+        <span className="font-mono text-sm font-semibold truncate">{filename}</span>
+        <button type="button" onClick={handleCopy} className="text-xs underline shrink-0">
           {copied ? 'Copied!' : 'Copy'}
         </button>
       </div>
@@ -127,29 +125,29 @@ function hasKeyedChanges(diff: KeyedListDiff): boolean {
 }
 
 // Field-level rows grouped by which generated file they land in — mirrors the
-// per-file structure shown at the top of the file panels.
+// per-file structure shown in the file tree. Hard invariants and soft
+// decisions are deliberately absent here — each is its own rule file with
+// its own Level 1/2 diff already (see the file tree + viewer below).
 function DiffDetail({ diff }: { diff: ScaffoldDiffSummary }) {
-  const claudeMdRows: { label: string; content: React.ReactNode }[] = []
+  const agentsMdRows: { label: string; content: React.ReactNode }[] = []
   const slicePlanRows: { label: string; content: React.ReactNode }[] = []
 
-  if (diff.projectSummaryChanged) claudeMdRows.push({ label: 'Project Summary', content: <div className="text-amber-600">~ changed</div> })
-  if (diff.stackArchitectureChanged) claudeMdRows.push({ label: 'Stack & Architecture', content: <div className="text-amber-600">~ changed</div> })
-  if (hasListChanges(diff.hardInvariants)) claudeMdRows.push({ label: 'Hard Invariants', content: <ListDiffLines diff={diff.hardInvariants} /> })
-  if (hasKeyedChanges(diff.softDecisions)) claudeMdRows.push({ label: 'Soft Decisions', content: <KeyedListDiffLines diff={diff.softDecisions} /> })
-  if (hasKeyedChanges(diff.knownForks)) claudeMdRows.push({ label: 'Known Forks', content: <KeyedListDiffLines diff={diff.knownForks} /> })
-  if (hasListChanges(diff.conventions)) claudeMdRows.push({ label: 'Conventions', content: <ListDiffLines diff={diff.conventions} /> })
+  if (diff.projectSummaryChanged) agentsMdRows.push({ label: 'Project Summary', content: <div className="text-amber-600">~ changed</div> })
+  if (diff.stackArchitectureChanged) agentsMdRows.push({ label: 'Stack & Architecture', content: <div className="text-amber-600">~ changed</div> })
+  if (hasKeyedChanges(diff.knownForks)) agentsMdRows.push({ label: 'Known Forks', content: <KeyedListDiffLines diff={diff.knownForks} /> })
+  if (hasListChanges(diff.conventions)) agentsMdRows.push({ label: 'Conventions', content: <ListDiffLines diff={diff.conventions} /> })
   if (hasKeyedChanges(diff.slices)) slicePlanRows.push({ label: 'Slice Plan', content: <KeyedListDiffLines diff={diff.slices} /> })
 
   const totalsByFile = groupDiffTotalsByFile(diff)
   const groups = [
-    { filename: 'CLAUDE.md', rows: claudeMdRows },
+    { filename: 'AGENTS.md', rows: agentsMdRows },
     { filename: 'slice-plan.md', rows: slicePlanRows },
   ]
     .map((g) => ({ ...g, totals: totalsByFile.find((f) => f.filename === g.filename) }))
     .filter((g) => g.rows.length > 0)
 
   if (groups.length === 0) {
-    return <div className="text-sm text-gray-500">No changes.</div>
+    return <div className="text-sm text-gray-500">No changes outside the rule files.</div>
   }
 
   return (
@@ -201,21 +199,7 @@ function CollapsibleDiffDetail({ diff }: { diff: ScaffoldDiffSummary }) {
   )
 }
 
-interface TwoFileTexts {
-  previousClaudeMdText: string
-  nextClaudeMdText: string
-  previousSlicePlanText: string
-  nextSlicePlanText: string
-}
-
-function namedFileDiffsFor(texts: TwoFileTexts) {
-  return computeNamedFileDiffs([
-    { filename: 'CLAUDE.md', previous: texts.previousClaudeMdText, next: texts.nextClaudeMdText },
-    { filename: 'slice-plan.md', previous: texts.previousSlicePlanText, next: texts.nextSlicePlanText },
-  ])
-}
-
-function ExpandableFileDiffs({ fileDiffs }: { fileDiffs: ReturnType<typeof computeNamedFileDiffs> }) {
+function ExpandableFileDiffs({ fileDiffs }: { fileDiffs: NamedFileDiff[] }) {
   if (fileDiffs.length === 0) {
     return <div className="text-gray-400">No file changes.</div>
   }
@@ -236,7 +220,7 @@ function ExpandableFileDiffs({ fileDiffs }: { fileDiffs: ReturnType<typeof compu
 
 function RevisionHistoryItem({ entry }: { entry: RevisionHistoryEntry }) {
   const [expanded, setExpanded] = useState(false)
-  const fileDiffs = namedFileDiffsFor(entry)
+  const fileDiffs = namedFileDiffsFromTrees(entry.previousFileTree, entry.nextFileTree)
 
   return (
     <div>
@@ -271,7 +255,7 @@ const REGENERATION_LABEL: Record<HistoryLineage['regeneration']['kind'], string>
 
 function LineageItem({ lineage }: { lineage: HistoryLineage }) {
   const [expanded, setExpanded] = useState(false)
-  const fileDiffs = namedFileDiffsFor(lineage.regeneration)
+  const fileDiffs = namedFileDiffsFromTrees(lineage.regeneration.previousFileTree, lineage.regeneration.nextFileTree)
 
   return (
     <div>
@@ -309,18 +293,93 @@ function LineageItem({ lineage }: { lineage: HistoryLineage }) {
   )
 }
 
+function FileTreeNodeView({
+  node,
+  depth,
+  selectedPath,
+  changedFilesByPath,
+  collapsedFolders,
+  onToggleFolder,
+  onSelectFile,
+}: {
+  node: TreeNode
+  depth: number
+  selectedPath: string
+  changedFilesByPath: Map<string, NamedFileDiff>
+  collapsedFolders: Set<string>
+  onToggleFolder: (path: string) => void
+  onSelectFile: (path: string) => void
+}) {
+  const paddingLeft = 8 + depth * 12
+
+  if (node.type === 'file') {
+    const diff = changedFilesByPath.get(node.path)
+    const selected = node.path === selectedPath
+    return (
+      <button
+        type="button"
+        onClick={() => onSelectFile(node.path)}
+        style={{ paddingLeft }}
+        className={
+          'flex items-center justify-between gap-2 w-full text-left py-1 pr-2 rounded text-sm ' +
+          (selected ? 'bg-blue-100' : 'hover:bg-gray-100')
+        }
+      >
+        <span className="font-mono truncate">{node.name}</span>
+        {diff && <CountBadge added={diff.added} removed={diff.removed} />}
+      </button>
+    )
+  }
+
+  const isCollapsed = collapsedFolders.has(node.path)
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => onToggleFolder(node.path)}
+        style={{ paddingLeft }}
+        className="flex items-center gap-1 w-full text-left py-1 pr-2 rounded text-sm font-semibold text-gray-700 hover:bg-gray-100"
+      >
+        <span className="text-gray-400">{isCollapsed ? '▸' : '▾'}</span>
+        <span className="font-mono truncate">{node.name}/</span>
+      </button>
+      {!isCollapsed &&
+        node.children.map((child) => (
+          <FileTreeNodeView
+            key={child.path}
+            node={child}
+            depth={depth + 1}
+            selectedPath={selectedPath}
+            changedFilesByPath={changedFilesByPath}
+            collapsedFolders={collapsedFolders}
+            onToggleFolder={onToggleFolder}
+            onSelectFile={onSelectFile}
+          />
+        ))}
+    </div>
+  )
+}
+
 export function GeneratedFilesView({ generation, onBackToInterview }: GeneratedFilesViewProps) {
   const { state, generate, regenerateWithRevisions, revise, dismissError } = generation
   const [downloading, setDownloading] = useState(false)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [revisionDraft, setRevisionDraft] = useState('')
+  const [selectedPath, setSelectedPath] = useState<string>('AGENTS.md')
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (state.fileTree && !(selectedPath in state.fileTree)) {
+      setSelectedPath('AGENTS.md')
+    }
+  }, [state.fileTree, selectedPath])
 
   const handleDownload = async () => {
-    if (!state.claudeMdText || !state.slicePlanText) return
+    if (!state.fileTree) return
     setDownloading(true)
     setDownloadError(null)
     try {
-      const blob = await buildScaffoldZip(state.claudeMdText, state.slicePlanText)
+      const blob = await buildScaffoldZip(state.fileTree)
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
@@ -340,14 +399,29 @@ export function GeneratedFilesView({ generation, onBackToInterview }: GeneratedF
   // The most recent action drives the diff display: an open revision if one
   // exists since the last regeneration, else the most recent regeneration's
   // own diff, else nothing (fresh first generation, no "previous" yet).
-  const latestAction: TwoFileTexts | undefined =
+  const latestAction: { previousFileTree: ScaffoldFileTree; nextFileTree: ScaffoldFileTree } | undefined =
     state.openRevisions.at(-1) ?? state.lineages.at(-1)?.regeneration
-  const claudeMdDiffOps = latestAction ? diffLines(latestAction.previousClaudeMdText, latestAction.nextClaudeMdText) : undefined
-  const slicePlanDiffOps = latestAction
-    ? diffLines(latestAction.previousSlicePlanText, latestAction.nextSlicePlanText)
-    : undefined
+  const changedFiles = latestAction ? namedFileDiffsFromTrees(latestAction.previousFileTree, latestAction.nextFileTree) : []
+  const changedFilesByPath = new Map(changedFiles.map((f) => [f.filename, f]))
   const latestActionDiff = state.openRevisions.at(-1)?.diff ?? state.lineages.at(-1)?.regeneration.diff
   const hasAnyRevisions = state.lineages.some((l) => l.revisions.length > 0) || state.openRevisions.length > 0
+
+  const paths = state.fileTree ? Object.keys(state.fileTree).sort() : []
+  const tree = buildFileTreeHierarchy(paths)
+  const selectedDiff = changedFilesByPath.get(selectedPath)
+  const selectedContent = state.fileTree?.[selectedPath] ?? ''
+
+  const toggleFolder = (path: string) => {
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) {
+        next.delete(path)
+      } else {
+        next.add(path)
+      }
+      return next
+    })
+  }
 
   return (
     <div className="flex flex-col h-screen p-4 gap-4">
@@ -388,7 +462,7 @@ export function GeneratedFilesView({ generation, onBackToInterview }: GeneratedF
               Regenerate with revisions
             </button>
           )}
-          {state.claudeMdText && state.slicePlanText && (
+          {state.fileTree && (
             <button
               type="button"
               onClick={handleDownload}
@@ -432,17 +506,31 @@ export function GeneratedFilesView({ generation, onBackToInterview }: GeneratedF
         </div>
       )}
 
-      {/* Level 1 (per-file badges) + Level 2 (inline red/green lines in place) */}
-      {state.claudeMdText && state.slicePlanText && (
+      {/* File tree (left) + single-file viewer with Level 1/2 diff (right) */}
+      {state.fileTree && (
         <div className="flex-1 flex gap-4 min-h-0">
-          <FilePanel filename="CLAUDE.md" content={state.claudeMdText} diffOps={claudeMdDiffOps} />
-          <FilePanel filename="slice-plan.md" content={state.slicePlanText} diffOps={slicePlanDiffOps} />
+          <aside className="w-72 border-r overflow-y-auto shrink-0">
+            {tree.map((node) => (
+              <FileTreeNodeView
+                key={node.path}
+                node={node}
+                depth={0}
+                selectedPath={selectedPath}
+                changedFilesByPath={changedFilesByPath}
+                collapsedFolders={collapsedFolders}
+                onToggleFolder={toggleFolder}
+                onSelectFile={setSelectedPath}
+              />
+            ))}
+          </aside>
+          <FilePanel filename={selectedPath} content={selectedContent} diffOps={selectedDiff?.ops} />
         </div>
       )}
 
-      {/* Level 3: detailed per-section breakdown, grouped by file, below the files.
-          Bounded + scrollable so a large diff scrolls within its own area
-          instead of growing the page and pushing the file panels off-screen. */}
+      {/* Detailed per-section breakdown for content that isn't its own rule
+          file (project summary, stack, forks, conventions, slices), below the
+          tree + viewer. Bounded + scrollable so a large diff scrolls within
+          its own area instead of growing the page. */}
       {latestActionDiff && <CollapsibleDiffDetail diff={latestActionDiff} />}
 
       {state.scaffold && (
