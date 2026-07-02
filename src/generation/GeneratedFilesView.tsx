@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { useGeneration } from './useGeneration'
+import { buildScaffoldZip } from './buildZip'
 
 interface GeneratedFilesViewProps {
   generation: ReturnType<typeof useGeneration>
@@ -30,6 +31,30 @@ function FilePanel({ filename, content }: { filename: string; content: string })
 
 export function GeneratedFilesView({ generation, onBackToInterview }: GeneratedFilesViewProps) {
   const { state, generate, dismissError } = generation
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+
+  const handleDownload = async () => {
+    if (!state.claudeMdText || !state.slicePlanText) return
+    setDownloading(true)
+    setDownloadError(null)
+    try {
+      const blob = await buildScaffoldZip(state.claudeMdText, state.slicePlanText)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'scaffold.zip'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('[download] Failed to build the scaffold zip:', error)
+      setDownloadError('Failed to build the download. Please try again.')
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   return (
     <div className="flex flex-col h-screen p-4 gap-4">
@@ -42,10 +67,29 @@ export function GeneratedFilesView({ generation, onBackToInterview }: GeneratedF
           <button type="button" onClick={generate} disabled={state.status === 'loading'} className="text-sm underline">
             Regenerate
           </button>
+          {state.status === 'done' && (
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={downloading}
+              className="px-3 py-1 bg-blue-600 text-white rounded text-sm"
+            >
+              {downloading ? 'Zipping…' : 'Download scaffold'}
+            </button>
+          )}
         </div>
       </div>
 
       {state.status === 'loading' && <p className="text-gray-400 text-sm">Generating…</p>}
+
+      {downloadError && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded flex items-center justify-between">
+          <span className="text-sm text-red-700">{downloadError}</span>
+          <button type="button" onClick={() => setDownloadError(null)} className="text-sm underline">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {state.errorMessage && (
         <div className="p-3 bg-red-50 border border-red-200 rounded flex items-center justify-between">
