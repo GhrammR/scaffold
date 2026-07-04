@@ -1,4 +1,10 @@
+export interface HardInvariantEntry {
+  title: string
+  content: string
+}
+
 export interface SoftDecisionEntry {
+  title: string
   decision: string
   reason: string
 }
@@ -11,7 +17,7 @@ export interface KnownForkEntry {
 export interface ClaudeMdContent {
   projectSummary: string
   stackArchitecture: string
-  hardInvariants: string[]
+  hardInvariants: HardInvariantEntry[]
   softDecisions: SoftDecisionEntry[]
   knownForks: KnownForkEntry[]
   conventions: string[]

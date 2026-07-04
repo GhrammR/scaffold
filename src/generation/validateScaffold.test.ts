@@ -51,8 +51,8 @@ describe('validateScaffold', () => {
       ...baseScaffold,
       claudeMd: {
         ...baseScaffold.claudeMd,
-        hardInvariants: ['Never log secrets.'],
-        softDecisions: [{ decision: 'Use SQLite for now.', reason: 'Might move to Postgres later.' }],
+        hardInvariants: [{ title: 'Secret Handling', content: 'Never log secrets.' }],
+        softDecisions: [{ title: 'Database Choice', decision: 'Use SQLite for now.', reason: 'Might move to Postgres later.' }],
       },
     }
     expect(validateScaffold(scaffold, decisions)).toEqual([])
@@ -61,10 +61,28 @@ describe('validateScaffold', () => {
   it('flags a soft decision entry missing a reason', () => {
     const scaffold: GeneratedScaffold = {
       ...baseScaffold,
-      claudeMd: { ...baseScaffold.claudeMd, softDecisions: [{ decision: 'Use SQLite.', reason: '' }] },
+      claudeMd: { ...baseScaffold.claudeMd, softDecisions: [{ title: 'Database Choice', decision: 'Use SQLite.', reason: '' }] },
     }
     const problems = validateScaffold(scaffold, [])
     expect(problems).toContain('At least one softDecisions entry is missing a reason.')
+  })
+
+  it('flags a soft decision entry missing a title', () => {
+    const scaffold: GeneratedScaffold = {
+      ...baseScaffold,
+      claudeMd: { ...baseScaffold.claudeMd, softDecisions: [{ title: '', decision: 'Use SQLite.', reason: 'Might revisit.' }] },
+    }
+    const problems = validateScaffold(scaffold, [])
+    expect(problems).toContain('At least one softDecisions entry is missing a title.')
+  })
+
+  it('flags a hard invariant entry missing a title or content', () => {
+    const scaffold: GeneratedScaffold = {
+      ...baseScaffold,
+      claudeMd: { ...baseScaffold.claudeMd, hardInvariants: [{ title: '', content: 'Never log secrets.' }] },
+    }
+    const problems = validateScaffold(scaffold, [])
+    expect(problems).toContain('At least one hardInvariants entry is missing a title or content.')
   })
 
   it('flags an empty slice plan', () => {

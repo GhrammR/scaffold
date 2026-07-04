@@ -6,8 +6,8 @@ const base: GeneratedScaffold = {
   claudeMd: {
     projectSummary: 'A calculator app.',
     stackArchitecture: 'React + TypeScript.',
-    hardInvariants: ['Divide by zero must show an error.'],
-    softDecisions: [{ decision: 'Use SQLite.', reason: 'Might move to Postgres later.' }],
+    hardInvariants: [{ title: 'Divide By Zero', content: 'Divide by zero must show an error.' }],
+    softDecisions: [{ title: 'Database Choice', decision: 'Use SQLite.', reason: 'Might move to Postgres later.' }],
     knownForks: [{ fork: 'Scientific mode toggle.', consideration: 'Keyboard support must cover it too.' }],
     conventions: ['Use Prettier defaults.'],
   },
@@ -19,89 +19,107 @@ describe('diffScaffold', () => {
     const diff = diffScaffold(base, base)
     expect(diff.projectSummaryChanged).toBe(false)
     expect(diff.stackArchitectureChanged).toBe(false)
-    expect(diff.hardInvariants).toEqual({ added: [], removed: [] })
+    expect(diff.hardInvariants).toEqual({ added: [], removed: [], modified: [] })
     expect(diff.conventions).toEqual({ added: [], removed: [] })
     expect(diff.softDecisions).toEqual({ added: [], removed: [], modified: [] })
     expect(diff.knownForks).toEqual({ added: [], removed: [], modified: [] })
     expect(diff.slices).toEqual({ added: [], removed: [], modified: [] })
   })
 
-  it('detects an added hard invariant without flagging unrelated fields', () => {
+  it('detects an added hard invariant (by title) without flagging unrelated fields', () => {
     const next: GeneratedScaffold = {
       ...base,
       claudeMd: {
         ...base.claudeMd,
-        hardInvariants: [...base.claudeMd.hardInvariants, 'Tests run before every commit.'],
+        hardInvariants: [...base.claudeMd.hardInvariants, { title: 'Commit Discipline', content: 'Tests run before every commit.' }],
       },
     }
     const diff = diffScaffold(base, next)
-    expect(diff.hardInvariants).toEqual({ added: ['Tests run before every commit.'], removed: [] })
+    expect(diff.hardInvariants).toEqual({ added: ['Commit Discipline'], removed: [], modified: [] })
     expect(diff.projectSummaryChanged).toBe(false)
     expect(diff.conventions).toEqual({ added: [], removed: [] })
   })
 
-  it('detects a removed hard invariant', () => {
+  it('detects a removed hard invariant (by title)', () => {
     const next: GeneratedScaffold = { ...base, claudeMd: { ...base.claudeMd, hardInvariants: [] } }
     const diff = diffScaffold(base, next)
-    expect(diff.hardInvariants).toEqual({ added: [], removed: ['Divide by zero must show an error.'] })
+    expect(diff.hardInvariants).toEqual({ added: [], removed: ['Divide By Zero'], modified: [] })
   })
 
-  it('a same-field replace ("swap this rule for that rule") reports BOTH the removal and the addition, never just one', () => {
+  it('a wording-only edit (same title, different content) reports a MODIFICATION, not a remove+add', () => {
+    const next: GeneratedScaffold = {
+      ...base,
+      claudeMd: {
+        ...base.claudeMd,
+        hardInvariants: [{ title: 'Divide By Zero', content: 'Divide by zero must show a clear error message.' }],
+      },
+    }
+    const diff = diffScaffold(base, next)
+    expect(diff.hardInvariants).toEqual({ added: [], removed: [], modified: ['Divide By Zero'] })
+  })
+
+  it('a topic change ("swap this rule for an unrelated one") reports BOTH the removal and the addition, keyed by title', () => {
     // Regression coverage for a reported issue: a "replace X with Y" revision
     // must surface both sides of the swap in the diff, not just the removal.
     const next: GeneratedScaffold = {
       ...base,
-      claudeMd: { ...base.claudeMd, hardInvariants: ['Negative square root must show an error.'] },
+      claudeMd: { ...base.claudeMd, hardInvariants: [{ title: 'Card Security', content: 'Never store payment details.' }] },
     }
     const diff = diffScaffold(base, next)
-    expect(diff.hardInvariants.removed).toEqual(['Divide by zero must show an error.'])
-    expect(diff.hardInvariants.added).toEqual(['Negative square root must show an error.'])
+    expect(diff.hardInvariants.removed).toEqual(['Divide By Zero'])
+    expect(diff.hardInvariants.added).toEqual(['Card Security'])
   })
 
-  it('a replace within a MULTI-item list still reports both sides, leaving untouched items out of the diff', () => {
+  it('a topic-change swap within a MULTI-item list still reports both sides, leaving untouched items out of the diff', () => {
     const multiItemBase: GeneratedScaffold = {
       ...base,
       claudeMd: {
         ...base.claudeMd,
-        hardInvariants: ['Divide by zero must show an error.', 'Log of a non-positive number must show an error.'],
+        hardInvariants: [
+          { title: 'Divide By Zero', content: 'Divide by zero must show an error.' },
+          { title: 'Log Domain', content: 'Log of a non-positive number must show an error.' },
+        ],
       },
     }
     const next: GeneratedScaffold = {
       ...multiItemBase,
       claudeMd: {
         ...multiItemBase.claudeMd,
-        hardInvariants: ['Negative square root must show an error.', 'Log of a non-positive number must show an error.'],
+        hardInvariants: [
+          { title: 'Card Security', content: 'Never store payment details.' },
+          { title: 'Log Domain', content: 'Log of a non-positive number must show an error.' },
+        ],
       },
     }
     const diff = diffScaffold(multiItemBase, next)
-    expect(diff.hardInvariants.removed).toEqual(['Divide by zero must show an error.'])
-    expect(diff.hardInvariants.added).toEqual(['Negative square root must show an error.'])
+    expect(diff.hardInvariants.removed).toEqual(['Divide By Zero'])
+    expect(diff.hardInvariants.added).toEqual(['Card Security'])
   })
 
-  it('detects a soft decision moved to hard (removed from soft, added to hard) by key', () => {
+  it('detects a soft decision moved to hard (removed from soft, added to hard) by title', () => {
     const next: GeneratedScaffold = {
       ...base,
       claudeMd: {
         ...base.claudeMd,
-        hardInvariants: [...base.claudeMd.hardInvariants, 'Use SQLite.'],
+        hardInvariants: [...base.claudeMd.hardInvariants, { title: 'Database Choice', content: 'Use SQLite.' }],
         softDecisions: [],
       },
     }
     const diff = diffScaffold(base, next)
-    expect(diff.hardInvariants.added).toContain('Use SQLite.')
-    expect(diff.softDecisions.removed).toEqual(['Use SQLite.'])
+    expect(diff.hardInvariants.added).toContain('Database Choice')
+    expect(diff.softDecisions.removed).toEqual(['Database Choice'])
   })
 
-  it('detects a modified entry (same key, different body) in a keyed list', () => {
+  it('detects a modified soft decision entry (same title, different reason) in a keyed list', () => {
     const next: GeneratedScaffold = {
       ...base,
       claudeMd: {
         ...base.claudeMd,
-        softDecisions: [{ decision: 'Use SQLite.', reason: 'A different reason now.' }],
+        softDecisions: [{ title: 'Database Choice', decision: 'Use SQLite.', reason: 'A different reason now.' }],
       },
     }
     const diff = diffScaffold(base, next)
-    expect(diff.softDecisions).toEqual({ added: [], removed: [], modified: ['Use SQLite.'] })
+    expect(diff.softDecisions).toEqual({ added: [], removed: [], modified: ['Database Choice'] })
   })
 
   it('detects a changed project summary', () => {
@@ -117,16 +135,16 @@ describe('summarizeDiff', () => {
     expect(summarizeDiff(diffScaffold(base, base))).toBe('No changes.')
   })
 
-  it('names the added invariant and lists unchanged sections', () => {
+  it('names the added invariant title and lists unchanged sections', () => {
     const next: GeneratedScaffold = {
       ...base,
       claudeMd: {
         ...base.claudeMd,
-        hardInvariants: [...base.claudeMd.hardInvariants, 'Tests run before every commit.'],
+        hardInvariants: [...base.claudeMd.hardInvariants, { title: 'Commit Discipline', content: 'Tests run before every commit.' }],
       },
     }
     const summary = summarizeDiff(diffScaffold(base, next))
-    expect(summary).toContain('Tests run before every commit.')
+    expect(summary).toContain('Commit Discipline')
     expect(summary).toContain('Unchanged:')
     expect(summary).toContain('soft decisions')
   })
@@ -137,12 +155,12 @@ describe('countDiffTotals', () => {
     expect(countDiffTotals(diffScaffold(base, base))).toEqual({ added: 0, removed: 0, modified: 0 })
   })
 
-  it('counts added and removed items across plain string list fields', () => {
+  it('counts added and removed items across hard invariants (keyed) and conventions (plain list)', () => {
     const next: GeneratedScaffold = {
       ...base,
       claudeMd: {
         ...base.claudeMd,
-        hardInvariants: ['Tests run before every commit.'],
+        hardInvariants: [{ title: 'Commit Discipline', content: 'Tests run before every commit.' }],
         conventions: [...base.claudeMd.conventions, 'Use 2-space indentation.'],
       },
     }
@@ -156,7 +174,7 @@ describe('countDiffTotals', () => {
       ...base,
       claudeMd: {
         ...base.claudeMd,
-        softDecisions: [{ decision: 'Use SQLite.', reason: 'A different reason now.' }],
+        softDecisions: [{ title: 'Database Choice', decision: 'Use SQLite.', reason: 'A different reason now.' }],
       },
     }
     const totals = countDiffTotals(diffScaffold(base, next))

@@ -1,4 +1,4 @@
-import type { ClaudeMdContent, GeneratedScaffold, KnownForkEntry, SliceEntry, SoftDecisionEntry } from './types'
+import type { ClaudeMdContent, GeneratedScaffold, HardInvariantEntry, KnownForkEntry, SliceEntry, SoftDecisionEntry } from './types'
 
 export interface ListDiff {
   added: string[]
@@ -12,7 +12,7 @@ export interface KeyedListDiff extends ListDiff {
 export interface ScaffoldDiffSummary {
   projectSummaryChanged: boolean
   stackArchitectureChanged: boolean
-  hardInvariants: ListDiff
+  hardInvariants: KeyedListDiff
   conventions: ListDiff
   softDecisions: KeyedListDiff
   knownForks: KeyedListDiff
@@ -53,13 +53,18 @@ export function diffScaffold(previous: GeneratedScaffold, next: GeneratedScaffol
   return {
     projectSummaryChanged: prevClaudeMd.projectSummary !== nextClaudeMd.projectSummary,
     stackArchitectureChanged: prevClaudeMd.stackArchitecture !== nextClaudeMd.stackArchitecture,
-    hardInvariants: diffStringList(prevClaudeMd.hardInvariants, nextClaudeMd.hardInvariants),
+    hardInvariants: diffKeyedList<HardInvariantEntry>(
+      prevClaudeMd.hardInvariants,
+      nextClaudeMd.hardInvariants,
+      (e) => e.title,
+      (e) => e.content,
+    ),
     conventions: diffStringList(prevClaudeMd.conventions, nextClaudeMd.conventions),
     softDecisions: diffKeyedList<SoftDecisionEntry>(
       prevClaudeMd.softDecisions,
       nextClaudeMd.softDecisions,
-      (d) => d.decision,
-      (d) => d.reason,
+      (d) => d.title,
+      (d) => `${d.decision}|${d.reason}`,
     ),
     knownForks: diffKeyedList<KnownForkEntry>(
       prevClaudeMd.knownForks,
@@ -90,12 +95,12 @@ export function countDiffTotals(diff: ScaffoldDiffSummary): DiffTotals {
   if (diff.projectSummaryChanged) modified += 1
   if (diff.stackArchitectureChanged) modified += 1
 
-  for (const listDiff of [diff.hardInvariants, diff.conventions]) {
+  for (const listDiff of [diff.conventions]) {
     added += listDiff.added.length
     removed += listDiff.removed.length
   }
 
-  for (const keyedDiff of [diff.softDecisions, diff.knownForks, diff.slices]) {
+  for (const keyedDiff of [diff.hardInvariants, diff.softDecisions, diff.knownForks, diff.slices]) {
     added += keyedDiff.added.length
     removed += keyedDiff.removed.length
     modified += keyedDiff.modified.length
@@ -131,7 +136,7 @@ export function summarizeDiff(diff: ScaffoldDiffSummary): string {
   if (diff.stackArchitectureChanged) changed.push('stack & architecture')
   else unchanged.push('stack & architecture')
 
-  const hardDesc = describeListDiff('hard invariants', diff.hardInvariants)
+  const hardDesc = describeKeyedListDiff('hard invariants', diff.hardInvariants)
   if (hardDesc) changed.push(hardDesc)
   else unchanged.push('hard invariants')
 

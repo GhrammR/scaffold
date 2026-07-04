@@ -17,7 +17,17 @@ export const SCAFFOLD_TOOL: ToolDefinition = {
           hardInvariants: {
             type: 'array',
             description: 'Each a discrete never-break rule, drawn from decisions tagged hard.',
-            items: { type: 'string' },
+            items: {
+              type: 'object',
+              properties: {
+                title: {
+                  type: 'string',
+                  description: 'A short human label for this rule (2-5 words), like a section heading — e.g. "Color Scheme". NOT a restatement of the rule text.',
+                },
+                content: { type: 'string', description: 'The actual rule statement.' },
+              },
+              required: ['title', 'content'],
+            },
           },
           softDecisions: {
             type: 'array',
@@ -25,10 +35,14 @@ export const SCAFFOLD_TOOL: ToolDefinition = {
             items: {
               type: 'object',
               properties: {
+                title: {
+                  type: 'string',
+                  description: 'A short human label for this decision (2-5 words), like a section heading. NOT a restatement of the decision text.',
+                },
                 decision: { type: 'string' },
                 reason: { type: 'string', description: 'Why this is provisional/changeable, grounded in what the user said.' },
               },
-              required: ['decision', 'reason'],
+              required: ['title', 'decision', 'reason'],
             },
           },
           knownForks: {

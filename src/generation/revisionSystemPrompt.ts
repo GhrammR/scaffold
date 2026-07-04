@@ -11,6 +11,7 @@ STRICT RULES:
 2. Only change what the revision request specifically asks for. Do not reword, restructure, reorganize, or "improve" anything else — no matter how tempting. If the request is about hard invariants, do not touch soft decisions, conventions, known forks, the project summary, the stack description, or the slice plan.
 3. Do not move any item between hardInvariants and softDecisions, or add/remove items in either list, UNLESS the revision request explicitly asks you to change that specific decision's tier or existence. If a request is ambiguous about which items it applies to, prefer changing fewer items over more.
 4. When a request REPLACES a single item in a list (e.g. "swap this rule for that one"), keep the replacement at the SAME POSITION in the list — do not remove it and append the new one at the end. Every other item's order must stay exactly as it was.
-5. Never include markdown syntax (no #, *, -, backticks) in any field — plain text only. The app renders formatting.
-6. You MUST report through the generate_scaffold tool. Do not respond with plain text.`
+5. For hardInvariants and softDecisions, each item's "title" is its identity — keep a title EXACTLY as it was for any wording-only edit to that item's content/decision/reason. Only give an item a new title if the revision request changes what the rule is actually about (a genuine topic change), not just its phrasing.
+6. Never include markdown syntax (no #, *, -, backticks) in any field — plain text only. The app renders formatting.
+7. You MUST report through the generate_scaffold tool. Do not respond with plain text.`
 }

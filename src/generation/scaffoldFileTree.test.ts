@@ -6,8 +6,11 @@ const scaffold: GeneratedScaffold = {
   claudeMd: {
     projectSummary: 'A recipe app for meal planning.',
     stackArchitecture: 'React + TypeScript, client-side only.',
-    hardInvariants: ['Never store payment details.', 'Divide by zero must show an error.'],
-    softDecisions: [{ decision: 'Use SQLite for storage.', reason: 'Might switch to Postgres later.' }],
+    hardInvariants: [
+      { title: 'Payment Data', content: 'Never store payment details.' },
+      { title: 'Divide By Zero', content: 'Divide by zero must show an error.' },
+    ],
+    softDecisions: [{ title: 'Database Choice', decision: 'Use SQLite for storage.', reason: 'Might switch to Postgres later.' }],
     knownForks: [{ fork: 'How recipes are shared.', consideration: 'Link-based or account-based.' }],
     conventions: ['Use Prettier defaults.'],
   },
@@ -40,17 +43,22 @@ describe('buildScaffoldFileTree', () => {
     expect(provisionalFiles).toHaveLength(1) // 1 soft decision
   })
 
-  it('names hard invariant files from content, without a provisional prefix', () => {
+  it('names hard invariant files from their title, not their content, and gives each a real title heading and body', () => {
     const files = buildScaffoldFileTree(scaffold)
     const paths = files.map((f) => f.path)
-    expect(paths).toContain('.agent_governance/rules/never-store-payment-details.md')
-    expect(paths).toContain('.agent_governance/rules/divide-by-zero-must-show-an.md')
+    expect(paths).toContain('.agent_governance/rules/payment-data.md')
+    expect(paths).toContain('.agent_governance/rules/divide-by-zero.md')
+
+    const paymentFile = files.find((f) => f.path === '.agent_governance/rules/payment-data.md')!
+    expect(paymentFile.content).toContain('# Payment Data')
+    expect(paymentFile.content).toContain('Never store payment details.')
   })
 
-  it('names soft decision files with the provisional- prefix and marks them clearly as changeable', () => {
+  it('names soft decision files with the provisional- prefix (from title) and marks them clearly as changeable', () => {
     const files = buildScaffoldFileTree(scaffold)
-    const provisional = files.find((f) => f.path === '.agent_governance/rules/provisional-use-sqlite-for-storage.md')
+    const provisional = files.find((f) => f.path === '.agent_governance/rules/provisional-database-choice.md')
     expect(provisional).toBeDefined()
+    expect(provisional!.content).toContain('# Database Choice')
     expect(provisional!.content).toContain('STATUS: Provisional — may change.')
     expect(provisional!.content).toContain('Might switch to Postgres later.')
   })
@@ -77,18 +85,18 @@ describe('buildScaffoldFileTree', () => {
       claudeMd: {
         ...scaffold.claudeMd,
         hardInvariants: [
-          'Always validate every input before storing anywhere.',
-          'Always validate every input before storing forever.',
-          'Always validate every input before storing twice.',
+          { title: 'Input Validation', content: 'Always validate every input before storing anywhere.' },
+          { title: 'Input Validation', content: 'Always validate every input before storing forever.' },
+          { title: 'Input Validation', content: 'Always validate every input before storing twice.' },
         ],
       },
     }
     const files = buildScaffoldFileTree(collidingScaffold)
-    const paths = files.map((f) => f.path).filter((p) => p.startsWith('.agent_governance/rules/always-validate-every-input'))
+    const paths = files.map((f) => f.path).filter((p) => p.startsWith('.agent_governance/rules/input-validation'))
     expect(paths).toEqual([
-      '.agent_governance/rules/always-validate-every-input-before-storing.md',
-      '.agent_governance/rules/always-validate-every-input-before-storing-2.md',
-      '.agent_governance/rules/always-validate-every-input-before-storing-3.md',
+      '.agent_governance/rules/input-validation.md',
+      '.agent_governance/rules/input-validation-2.md',
+      '.agent_governance/rules/input-validation-3.md',
     ])
   })
 
@@ -97,14 +105,51 @@ describe('buildScaffoldFileTree', () => {
       ...scaffold,
       claudeMd: {
         ...scaffold.claudeMd,
-        hardInvariants: ['Use SQLite for storage.'],
-        softDecisions: [{ decision: 'Use SQLite for storage.', reason: 'Might revisit.' }],
+        hardInvariants: [{ title: 'Database Choice', content: 'Use SQLite for storage.' }],
+        softDecisions: [{ title: 'Database Choice', decision: 'Use SQLite for storage.', reason: 'Might revisit.' }],
       },
     }
     const files = buildScaffoldFileTree(overlapping)
     const paths = files.map((f) => f.path)
-    expect(paths).toContain('.agent_governance/rules/use-sqlite-for-storage.md')
-    expect(paths).toContain('.agent_governance/rules/provisional-use-sqlite-for-storage.md')
+    expect(paths).toContain('.agent_governance/rules/database-choice.md')
+    expect(paths).toContain('.agent_governance/rules/provisional-database-choice.md')
+  })
+
+  it('a wording-only revision (title unchanged) keeps the same file path', () => {
+    const revised: GeneratedScaffold = {
+      ...scaffold,
+      claudeMd: {
+        ...scaffold.claudeMd,
+        hardInvariants: [
+          { title: 'Payment Data', content: 'Never store any payment details, including partial card numbers.' },
+          scaffold.claudeMd.hardInvariants[1],
+        ],
+      },
+    }
+    const before = buildScaffoldFileTree(scaffold).map((f) => f.path)
+    const after = buildScaffoldFileTree(revised).map((f) => f.path)
+    expect(after).toContain('.agent_governance/rules/payment-data.md')
+    expect(before.filter((p) => p.startsWith('.agent_governance/rules/') && !p.includes('provisional'))).toEqual(
+      after.filter((p) => p.startsWith('.agent_governance/rules/') && !p.includes('provisional')),
+    )
+  })
+
+  it('a retitle (topic change) moves the file to a new path', () => {
+    const retitled: GeneratedScaffold = {
+      ...scaffold,
+      claudeMd: {
+        ...scaffold.claudeMd,
+        hardInvariants: [
+          { title: 'Card Security', content: 'Never store payment details.' },
+          scaffold.claudeMd.hardInvariants[1],
+        ],
+      },
+    }
+    const before = buildScaffoldFileTree(scaffold).map((f) => f.path)
+    const after = buildScaffoldFileTree(retitled).map((f) => f.path)
+    expect(before).toContain('.agent_governance/rules/payment-data.md')
+    expect(after).not.toContain('.agent_governance/rules/payment-data.md')
+    expect(after).toContain('.agent_governance/rules/card-security.md')
   })
 
   it('slice-plan.md content is unchanged from before this slice', () => {

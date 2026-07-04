@@ -6,7 +6,7 @@ const scaffold: GeneratedScaffold = {
   claudeMd: {
     projectSummary: 'A calculator app.',
     stackArchitecture: 'React + TypeScript.',
-    hardInvariants: ['Divide by zero must show an error.'],
+    hardInvariants: [{ title: 'Divide By Zero', content: 'Divide by zero must show an error.' }],
     softDecisions: [],
     knownForks: [],
     conventions: [],

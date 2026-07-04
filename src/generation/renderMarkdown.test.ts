@@ -5,8 +5,8 @@ import type { ClaudeMdContent, SlicePlanContent } from './types'
 const fullContent: ClaudeMdContent = {
   projectSummary: 'A recipe app for meal planning.',
   stackArchitecture: 'React + TypeScript, client-side only.',
-  hardInvariants: ['Never store payment details.'],
-  softDecisions: [{ decision: 'Use SQLite for storage.', reason: 'User said "might switch to Postgres later".' }],
+  hardInvariants: [{ title: 'Payment Data', content: 'Never store payment details.' }],
+  softDecisions: [{ title: 'Database Choice', decision: 'Use SQLite for storage.', reason: 'User said "might switch to Postgres later".' }],
   knownForks: [{ fork: 'How recipes are shared between users.', consideration: 'Could be link-based or account-based.' }],
   conventions: ['Use Prettier defaults.'],
 }

@@ -30,6 +30,14 @@ export function validateScaffold(scaffold: GeneratedScaffold, decisions: Decisio
     problems.push('At least one softDecisions entry is missing a reason.')
   }
 
+  if (claudeMd.hardInvariants.some((e) => !e.title.trim() || !e.content.trim())) {
+    problems.push('At least one hardInvariants entry is missing a title or content.')
+  }
+
+  if (claudeMd.softDecisions.some((d) => !d.title.trim())) {
+    problems.push('At least one softDecisions entry is missing a title.')
+  }
+
   if (slicePlan.slices.length === 0) {
     problems.push('slicePlan has no slices.')
   }

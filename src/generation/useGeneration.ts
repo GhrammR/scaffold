@@ -9,8 +9,8 @@ import { buildRegenerateWithRevisionsSystemPrompt } from './regenerateWithRevisi
 import { buildScaffoldFileTree } from './scaffoldFileTree'
 import { validateScaffold } from './validateScaffold'
 import { countDiffTotals, diffScaffold, summarizeDiff, type ScaffoldDiffSummary } from './diffScaffold'
-import type { GeneratedScaffold } from './types'
-import { loadSession, saveSession } from '../storage/sessionPersistence'
+import type { GeneratedScaffold, HardInvariantEntry, SoftDecisionEntry } from './types'
+import { clearSession, loadSession, saveSession } from '../storage/sessionPersistence'
 
 export type GenerationStatus = 'idle' | 'loading' | 'error' | 'done'
 
@@ -112,6 +112,18 @@ function normalizeScaffoldInput(input: unknown): unknown {
   return normalized
 }
 
+function isHardInvariantEntry(item: unknown): item is HardInvariantEntry {
+  if (typeof item !== 'object' || item === null) return false
+  const entry = item as Record<string, unknown>
+  return typeof entry.title === 'string' && typeof entry.content === 'string'
+}
+
+function isSoftDecisionEntry(item: unknown): item is SoftDecisionEntry {
+  if (typeof item !== 'object' || item === null) return false
+  const entry = item as Record<string, unknown>
+  return typeof entry.title === 'string' && typeof entry.decision === 'string' && typeof entry.reason === 'string'
+}
+
 function isGeneratedScaffold(input: unknown): input is GeneratedScaffold {
   if (typeof input !== 'object' || input === null) return false
   const candidate = input as Record<string, unknown>
@@ -123,23 +135,42 @@ function isGeneratedScaffold(input: unknown): input is GeneratedScaffold {
     typeof claudeMd.projectSummary === 'string' &&
     typeof claudeMd.stackArchitecture === 'string' &&
     Array.isArray(claudeMd.hardInvariants) &&
+    claudeMd.hardInvariants.every(isHardInvariantEntry) &&
     Array.isArray(claudeMd.softDecisions) &&
+    claudeMd.softDecisions.every(isSoftDecisionEntry) &&
     Array.isArray(claudeMd.knownForks) &&
     Array.isArray(claudeMd.conventions) &&
     Array.isArray(slicePlan.slices)
   )
 }
 
+// Startup must never white-screen from persisted data that predates a schema
+// change (e.g. hardInvariants entries were plain strings before the
+// rule-quality pass). Validate shape before trusting it; on any mismatch or
+// build failure, discard the stale entry and fall back to a clean start.
 function initialState(): UseGenerationState {
   const persisted = loadSession()
   if (persisted?.generatedScaffold) {
-    return {
-      status: 'done',
-      scaffold: persisted.generatedScaffold,
-      fileTree: buildFileTree(persisted.generatedScaffold),
-      revisionMessages: persisted.revisionMessages ?? [],
-      lineages: persisted.lineages ?? [],
-      openRevisions: persisted.openRevisions ?? [],
+    if (!isGeneratedScaffold(persisted.generatedScaffold)) {
+      console.error(
+        '[initialState] Persisted scaffold does not match the current schema (likely from a version before a schema change) — discarding the stale session and starting fresh.',
+      )
+      clearSession()
+      return { status: 'idle', revisionMessages: [], lineages: [], openRevisions: [] }
+    }
+    try {
+      return {
+        status: 'done',
+        scaffold: persisted.generatedScaffold,
+        fileTree: buildFileTree(persisted.generatedScaffold),
+        revisionMessages: persisted.revisionMessages ?? [],
+        lineages: persisted.lineages ?? [],
+        openRevisions: persisted.openRevisions ?? [],
+      }
+    } catch (error) {
+      console.error('[initialState] Failed to rebuild the file tree from persisted state — discarding the stale session and starting fresh.', error)
+      clearSession()
+      return { status: 'idle', revisionMessages: [], lineages: [], openRevisions: [] }
     }
   }
   return { status: 'idle', revisionMessages: [], lineages: [], openRevisions: [] }

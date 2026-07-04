@@ -34,8 +34,8 @@ const goodScaffold = (overrides: Partial<GeneratedScaffold['claudeMd']> = {}): G
   claudeMd: {
     projectSummary: 'A recipe app.',
     stackArchitecture: 'React + TypeScript.',
-    hardInvariants: ['Never store payment details.'],
-    softDecisions: [{ decision: 'Use SQLite.', reason: 'Might move to Postgres later.' }],
+    hardInvariants: [{ title: 'Payment Data', content: 'Never store payment details.' }],
+    softDecisions: [{ title: 'Database Choice', decision: 'Use SQLite.', reason: 'Might move to Postgres later.' }],
     knownForks: [],
     conventions: [],
     ...overrides,
@@ -253,6 +253,40 @@ describe('useGeneration', () => {
     expect(restored.current.state.status).toBe('done')
     expect(restored.current.state.fileTree?.['AGENTS.md']).toContain('A recipe app.')
   })
+
+  it('discards a persisted scaffold from a pre-schema-change session (hardInvariants as plain strings) instead of crashing', () => {
+    // Regression coverage: before the rule-quality pass, hardInvariants was
+    // string[]. A session persisted under the old schema must not white-screen
+    // the app on load — it should be discarded in favor of a clean start.
+    window.localStorage.setItem(
+      'scaffold:interviewSession',
+      JSON.stringify({
+        messages: [],
+        coverage: [],
+        decisions: [],
+        readyToGenerate: true,
+        generatedScaffold: {
+          claudeMd: {
+            projectSummary: 'A recipe app.',
+            stackArchitecture: 'React + TypeScript.',
+            hardInvariants: ['Never store payment details.'], // old shape: string, not {title, content}
+            softDecisions: [{ decision: 'Use SQLite.', reason: 'Might move to Postgres later.' }], // old shape: no title
+            knownForks: [],
+            conventions: [],
+          },
+          slicePlan: { slices: [{ title: 'Slice 1', description: 'Build the thing.' }] },
+        },
+      }),
+    )
+
+    const provider = fakeProvider([])
+    expect(() => renderHook(() => useGeneration(provider, [], [], []))).not.toThrow()
+
+    const { result } = renderHook(() => useGeneration(provider, [], [], []))
+    expect(result.current.state.status).toBe('idle')
+    expect(result.current.state.scaffold).toBeUndefined()
+    expect(window.localStorage.getItem('scaffold:interviewSession')).toBeNull()
+  })
 })
 
 describe('useGeneration revision', () => {
@@ -296,14 +330,17 @@ describe('useGeneration revision', () => {
   })
 
   it('updates rendered text in place and appends the request plus a computed confirmation to revisionMessages', async () => {
-    const revised = goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] })
+    const revised = goodScaffold({ hardInvariants: [
+        { title: 'Payment Data', content: 'Never store payment details.' },
+        { title: 'Commit Discipline', content: 'Tests run before every commit.' },
+      ] })
     const { result } = await generateThenRevise([revised])
 
     act(() => result.current.revise('Add a hard rule that tests run before every commit.'))
     await waitFor(() => expect(result.current.state.status).toBe('done'))
 
     expect(anyFileContains(result.current.state.fileTree, 'Tests run before every commit.')).toBe(true)
-    expect(result.current.state.lastDiffSummary).toContain('Tests run before every commit.')
+    expect(result.current.state.lastDiffSummary).toContain('Commit Discipline')
 
     const userTurns = result.current.state.revisionMessages.filter((m) => m.role === 'user')
     const assistantTurns = result.current.state.revisionMessages.filter((m) => m.role === 'assistant')
@@ -342,8 +379,14 @@ describe('useGeneration revision', () => {
     // then confirm plain Regenerate wipes all of it, not just the open group.
     const provider = fakeProvider([
       goodScaffold(),
-      goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] }),
-      goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] }), // regenerate-with-revisions
+      goodScaffold({ hardInvariants: [
+        { title: 'Payment Data', content: 'Never store payment details.' },
+        { title: 'Commit Discipline', content: 'Tests run before every commit.' },
+      ] }),
+      goodScaffold({ hardInvariants: [
+        { title: 'Payment Data', content: 'Never store payment details.' },
+        { title: 'Commit Discipline', content: 'Tests run before every commit.' },
+      ] }), // regenerate-with-revisions
       goodScaffold(), // plain Regenerate
     ])
     const { result } = renderHook(() => useGeneration(provider, [{ role: 'user', content: 'hi' }], [], [hardDecision]))
@@ -382,7 +425,10 @@ describe('useGeneration revision', () => {
   })
 
   it('appends a structured entry (request + diff) to revisionHistory on each successful revision', async () => {
-    const revised = goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] })
+    const revised = goodScaffold({ hardInvariants: [
+        { title: 'Payment Data', content: 'Never store payment details.' },
+        { title: 'Commit Discipline', content: 'Tests run before every commit.' },
+      ] })
     const { result } = await generateThenRevise([revised])
 
     act(() => result.current.revise('Add a hard rule that tests run before every commit.'))
@@ -390,11 +436,14 @@ describe('useGeneration revision', () => {
 
     expect(result.current.state.openRevisions).toHaveLength(1)
     expect(result.current.state.openRevisions[0].request).toBe('Add a hard rule that tests run before every commit.')
-    expect(result.current.state.openRevisions[0].diff.hardInvariants.added).toContain('Tests run before every commit.')
+    expect(result.current.state.openRevisions[0].diff.hardInvariants.added).toContain('Commit Discipline')
   })
 
   it('captures the before/after rendered text for each revision, for the inline line-level diff', async () => {
-    const revised = goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] })
+    const revised = goodScaffold({ hardInvariants: [
+        { title: 'Payment Data', content: 'Never store payment details.' },
+        { title: 'Commit Discipline', content: 'Tests run before every commit.' },
+      ] })
     const { result } = await generateThenRevise([revised])
 
     const fileTreeBefore = result.current.state.fileTree
@@ -411,7 +460,7 @@ describe('useGeneration revision', () => {
     // Mirrors the real scenario that regressed: replacing one hard invariant's
     // wording (divide-by-zero -> negative-sqrt) must show up as a real diff,
     // not report identical before/after because of a stale capture.
-    const revised = goodScaffold({ hardInvariants: ['Negative square root must show an error.'] })
+    const revised = goodScaffold({ hardInvariants: [{ title: 'Negative Square Root', content: 'Negative square root must show an error.' }] })
     const { result } = await generateThenRevise([revised])
 
     const fileTreeBefore = result.current.state.fileTree
@@ -424,9 +473,9 @@ describe('useGeneration revision', () => {
     expect(entry.previousFileTree).toEqual(fileTreeBefore)
     expect(entry.nextFileTree).not.toEqual(entry.previousFileTree)
 
-    // The field-level diff must reflect the swap, not report empty lists.
-    expect(entry.diff.hardInvariants.removed).toContain('Never store payment details.')
-    expect(entry.diff.hardInvariants.added).toContain('Negative square root must show an error.')
+    // The field-level diff must reflect the swap (keyed by title), not report empty lists.
+    expect(entry.diff.hardInvariants.removed).toContain('Payment Data')
+    expect(entry.diff.hardInvariants.added).toContain('Negative Square Root')
     const totalChanges =
       entry.diff.hardInvariants.added.length +
       entry.diff.hardInvariants.removed.length +
@@ -483,9 +532,15 @@ describe('useGeneration regenerateWithRevisions', () => {
   async function generateReviseTwice(freshScaffold: GeneratedScaffold) {
     const provider = fakeProvider([
       goodScaffold(),
-      goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] }),
+      goodScaffold({ hardInvariants: [
+        { title: 'Payment Data', content: 'Never store payment details.' },
+        { title: 'Commit Discipline', content: 'Tests run before every commit.' },
+      ] }),
       goodScaffold({
-        hardInvariants: ['Never store payment details.', 'Tests run before every commit.'],
+        hardInvariants: [
+        { title: 'Payment Data', content: 'Never store payment details.' },
+        { title: 'Commit Discipline', content: 'Tests run before every commit.' },
+      ],
         conventions: ['Use tabs.'],
       }),
       freshScaffold,
@@ -558,10 +613,19 @@ describe('useGeneration regenerateWithRevisions', () => {
   it('includes requests from an already-closed lineage on a second regenerate-with-revisions, not just the open group', async () => {
     const provider = fakeProvider([
       goodScaffold(),
-      goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] }),
-      goodScaffold({ hardInvariants: ['Never store payment details.', 'Tests run before every commit.'] }), // 1st regenerate-with-revisions
+      goodScaffold({ hardInvariants: [
+        { title: 'Payment Data', content: 'Never store payment details.' },
+        { title: 'Commit Discipline', content: 'Tests run before every commit.' },
+      ] }),
+      goodScaffold({ hardInvariants: [
+        { title: 'Payment Data', content: 'Never store payment details.' },
+        { title: 'Commit Discipline', content: 'Tests run before every commit.' },
+      ] }), // 1st regenerate-with-revisions
       goodScaffold({
-        hardInvariants: ['Never store payment details.', 'Tests run before every commit.'],
+        hardInvariants: [
+        { title: 'Payment Data', content: 'Never store payment details.' },
+        { title: 'Commit Discipline', content: 'Tests run before every commit.' },
+      ],
         conventions: ['Use tabs.'],
       }),
       goodScaffold({ conventions: ['Use tabs.'] }), // 2nd regenerate-with-revisions

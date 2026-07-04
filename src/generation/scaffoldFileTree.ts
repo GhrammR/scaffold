@@ -21,7 +21,10 @@ CLAUDE.md and AGENTS.md at the repo root are the entry points that point here.
 // Derives a short, stable, human-legible slug from rule text. Deterministic and
 // content-based (not LLM-assigned) so untouched items keep the same path across
 // revisions, while a genuinely different rule gets a genuinely different path.
+// Defensive against non-string/missing input (e.g. stale persisted data from
+// before a schema change) — falls back to "rule" instead of throwing.
 export function slugify(text: string): string {
+  if (typeof text !== 'string' || !text.trim()) return 'rule'
   const words = text
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, '')
@@ -39,15 +42,15 @@ function uniqueSlug(base: string, used: Map<string, number>): string {
   return count === 0 ? base : `${base}-${count + 1}`
 }
 
-function renderHardInvariantFile(text: string): string {
-  return `# Rule
+function renderHardInvariantFile(title: string, content: string): string {
+  return `# ${title}
 
-${text}
+${content}
 `
 }
 
-function renderProvisionalFile(decision: string, reason: string): string {
-  return `# Provisional Decision
+function renderProvisionalFile(title: string, decision: string, reason: string): string {
+  return `# ${title}
 
 STATUS: Provisional — may change.
 
@@ -71,18 +74,18 @@ export function buildScaffoldFileTree(scaffold: GeneratedScaffold): ScaffoldFile
   const usedSoftSlugs = new Map<string, number>()
 
   for (const invariant of claudeMd.hardInvariants) {
-    const slug = uniqueSlug(slugify(invariant), usedHardSlugs)
+    const slug = uniqueSlug(slugify(invariant.title), usedHardSlugs)
     entries.push({
       path: `.agent_governance/rules/${slug}.md`,
-      content: renderHardInvariantFile(invariant),
+      content: renderHardInvariantFile(invariant.title, invariant.content),
     })
   }
 
   for (const soft of claudeMd.softDecisions) {
-    const slug = uniqueSlug(slugify(soft.decision), usedSoftSlugs)
+    const slug = uniqueSlug(slugify(soft.title), usedSoftSlugs)
     entries.push({
       path: `.agent_governance/rules/provisional-${slug}.md`,
-      content: renderProvisionalFile(soft.decision, soft.reason),
+      content: renderProvisionalFile(soft.title, soft.decision, soft.reason),
     })
   }
 

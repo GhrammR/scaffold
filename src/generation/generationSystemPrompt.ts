@@ -22,5 +22,6 @@ Your job is to report the generate_scaffold tool with the following STRICT rules
 4. For knownForks, draw from decisions and coverage notes about rework-risk / weak-spot areas — do not invent forks that were never raised.
 5. The slice plan must be an ordered, concrete build sequence reflecting the ACTUAL project scope discussed in the transcript — not a generic "step 1: setup, step 2: build" template.
 6. Never include markdown syntax (no #, *, -, backticks) in any field — plain text only. The app renders formatting.
-7. You MUST report through the generate_scaffold tool. Do not respond with plain text.`
+7. Every hardInvariants and softDecisions entry needs a "title": a short human label (2-5 words), like a section heading — e.g. "Color Scheme", "Payment Data Handling". A title is NOT a restatement or truncation of the rule/decision text; it names the topic. Each item's file on disk is named after its title, so titles must be distinct from each other.
+8. You MUST report through the generate_scaffold tool. Do not respond with plain text.`
 }

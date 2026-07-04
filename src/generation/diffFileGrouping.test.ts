@@ -7,8 +7,8 @@ const base: GeneratedScaffold = {
   claudeMd: {
     projectSummary: 'A calculator app.',
     stackArchitecture: 'React + TypeScript.',
-    hardInvariants: ['Divide by zero must show an error.'],
-    softDecisions: [{ decision: 'Use SQLite.', reason: 'Might move to Postgres later.' }],
+    hardInvariants: [{ title: 'Divide By Zero', content: 'Divide by zero must show an error.' }],
+    softDecisions: [{ title: 'Database Choice', decision: 'Use SQLite.', reason: 'Might move to Postgres later.' }],
     knownForks: [],
     conventions: [],
   },
@@ -27,7 +27,7 @@ describe('groupDiffTotalsByFile', () => {
   it('does NOT attribute a hard invariant change to any file — that is covered by per-rule-file diffs instead', () => {
     const next: GeneratedScaffold = {
       ...base,
-      claudeMd: { ...base.claudeMd, hardInvariants: ['Negative square root must show an error.'] },
+      claudeMd: { ...base.claudeMd, hardInvariants: [{ title: 'Negative Square Root', content: 'Negative square root must show an error.' }] },
     }
     const groups = groupDiffTotalsByFile(diffScaffold(base, next))
     expect(groups).toEqual([
@@ -39,7 +39,7 @@ describe('groupDiffTotalsByFile', () => {
   it('does NOT attribute a soft decision change to any file either', () => {
     const next: GeneratedScaffold = {
       ...base,
-      claudeMd: { ...base.claudeMd, softDecisions: [{ decision: 'Use Postgres.', reason: 'Reconsidered.' }] },
+      claudeMd: { ...base.claudeMd, softDecisions: [{ title: 'Database Choice', decision: 'Use Postgres.', reason: 'Reconsidered.' }] },
     }
     const groups = groupDiffTotalsByFile(diffScaffold(base, next))
     expect(groups).toEqual([
